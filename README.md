@@ -1,25 +1,38 @@
-# Collaborative AI Workspace — Phase 1 (Foundation)
+# Collaborative AI Workspace — Phase 1 + 2
 
-Personal AI workspace: auth, personal chat, message persistence. Built entirely
-on free tiers — Supabase (Postgres + Auth, free project) and Groq (free LLM API).
-Runs locally for now.
+Personal + group AI workspace. Built entirely on free tiers — Supabase
+(Postgres + Auth + Realtime, free project) and Groq (free LLM API). Runs
+locally for now.
 
-## What's included in this phase
+## What's included
 
+**Phase 1 — Foundation**
 - **Auth**: Supabase email/password auth (frontend), verified server-side via JWT (backend).
 - **Personal chat**: create conversations, send messages, streamed AI replies.
 - **Persistence**: every message (user + assistant) stored in Postgres.
 - **Isolation groundwork**: `pgvector` extension enabled and RLS policies in
-  place now, so Phase 3 (RAG) and Phase 2 (group rooms) don't need a schema
-  rewrite later.
+  place now, so Phase 3 (RAG) doesn't need a schema rewrite later.
 
-Not yet built (later phases): group rooms/WebSockets, document upload/RAG,
-citations/abstention, caching, memory, multi-agent tools, deployment.
+**Phase 2 — Group Collaboration**
+- **Rooms**: create a room (gets a 6-character join code) or join one with a code.
+- **Real-time sync**: new messages appear for every member instantly via
+  **Supabase Realtime** (Postgres change subscriptions) — no backend
+  WebSocket server needed.
+- **Presence**: sidebar shows who's currently online in the room (Supabase
+  Realtime Presence, client-side only).
+- **AI in group chat**: any message starting with `@ai` triggers an
+  assistant reply, persisted and broadcast to the whole room like any other message.
+
+Not yet built (later phases): document upload/RAG, citations/abstention,
+caching, memory, multi-agent tools, deployment.
 
 ## 1. Create free accounts (5 min)
 
 1. **Supabase** — [supabase.com](https://supabase.com) → New project (free tier).
-   - In the SQL Editor, paste and run `db/schema.sql`.
+   - In the SQL Editor, paste and run `db/schema.sql`, then `db/phase2_schema.sql`.
+   - Database → Replication: confirm `room_messages` is listed under the
+     `supabase_realtime` publication (the schema script adds it, but it's
+     worth a glance — this is what makes group chat update live).
    - Project Settings → API: copy `Project URL` and `anon public` key.
    - Project Settings → API → JWT Settings: copy the `JWT Secret`.
    - Project Settings → Database: copy the connection string (URI). Use the
@@ -61,10 +74,14 @@ backend/
   app/llm.py              Groq streaming client
   app/routers/conversations.py
   app/routers/chat.py       Streams model output, persists messages
-db/schema.sql          Supabase tables + RLS policies
+  app/routers/rooms.py       Rooms, join codes, group messages, @ai trigger
+db/schema.sql          Phase 1 tables + RLS policies
+db/phase2_schema.sql    Rooms, membership, room messages + Realtime publication
 frontend/
   app/page.tsx           Sign in / sign up
-  app/chat/page.tsx        Conversation list + streaming chat UI
+  app/chat/page.tsx        Personal conversation list + streaming chat UI
+  app/rooms/page.tsx        Create/join rooms
+  app/rooms/[roomId]/page.tsx   Group chat with live sync + presence
   lib/supabase.ts        Browser Supabase client
   lib/api.ts               Typed calls to the FastAPI backend
 ```
@@ -74,7 +91,7 @@ frontend/
 | Phase | Focus |
 |---|---|
 | 1 ✅ | Foundation — auth, personal chat, persistence |
-| 2 | Group rooms, invites, WebSockets, presence |
+| 2 ✅ | Group rooms, invites, realtime sync, presence |
 | 3 | Document upload + RAG (pgvector retrieval) |
 | 4 | Citations, abstention, source viewer, permissions |
 | 5 | Redis caching, parallel retrieval, background workers |

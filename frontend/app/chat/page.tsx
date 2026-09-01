@@ -122,6 +122,12 @@ export default function ChatPage() {
           <button onClick={handleNewConversation} style={newChatButtonStyle}>
             + New chat
           </button>
+          <a
+            href="/rooms"
+            style={{ display: "block", marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}
+          >
+            Group rooms →
+          </a>
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
           {conversations.map((c) => (
