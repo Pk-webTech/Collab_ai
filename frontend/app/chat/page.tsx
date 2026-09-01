@@ -11,6 +11,7 @@ import {
   listConversations,
   sendMessageStream,
 } from "@/lib/api";
+import DocumentsPanel from "@/components/DocumentsPanel";
 
 export default function ChatPage() {
   const router = useRouter();
@@ -147,6 +148,9 @@ export default function ChatPage() {
               No conversations yet.
             </p>
           )}
+        </div>
+        <div style={{ padding: 16, borderTop: "1px solid var(--border)" }}>
+          <DocumentsPanel />
         </div>
         <div style={{ padding: 16, borderTop: "1px solid var(--border)" }}>
           <button onClick={handleSignOut} style={signOutButtonStyle}>

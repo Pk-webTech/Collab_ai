@@ -18,16 +18,31 @@ SYSTEM_PROMPT = (
     "instead of guessing."
 )
 
+CONTEXT_INSTRUCTIONS = (
+    "\n\nThe following excerpts were retrieved from documents the user has "
+    "uploaded, because they may be relevant to the latest message. Use them "
+    "if they help answer the question, and mention which source you drew "
+    "from by filename. If they aren't relevant, ignore them and answer "
+    "normally -- don't force a connection.\n\n"
+)
 
-async def stream_chat_completion(history: list[dict]) -> AsyncGenerator[str, None]:
+
+async def stream_chat_completion(
+    history: list[dict], context: str | None = None
+) -> AsyncGenerator[str, None]:
     """
     history: list of {"role": "user"|"assistant", "content": str}, oldest first.
+    context: optional retrieved-document text to ground the reply in (RAG).
     Yields text chunks as they arrive from Groq.
     """
     client = get_client()
     model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}, *history]
+    system_content = SYSTEM_PROMPT
+    if context:
+        system_content += CONTEXT_INSTRUCTIONS + context
+
+    messages = [{"role": "system", "content": system_content}, *history]
 
     stream = await client.chat.completions.create(
         model=model,

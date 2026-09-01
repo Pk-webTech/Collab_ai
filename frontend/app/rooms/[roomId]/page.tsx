@@ -12,6 +12,7 @@ import {
   listRooms,
   sendRoomMessage,
 } from "@/lib/api";
+import DocumentsPanel from "@/components/DocumentsPanel";
 
 export default function RoomChatPage() {
   const router = useRouter();
@@ -163,6 +164,10 @@ export default function RoomChatPage() {
         <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16 }}>
           Type <code>@ai</code> at the start of a message to bring the assistant in.
         </p>
+
+        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+          <DocumentsPanel roomId={roomId} />
+        </div>
       </aside>
 
       <section style={{ flex: 1, display: "flex", flexDirection: "column" }}>

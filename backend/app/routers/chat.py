@@ -6,6 +6,7 @@ from uuid import UUID
 from ..auth import get_current_user, CurrentUser
 from ..db import get_pool
 from ..llm import stream_chat_completion
+from ..retrieval import retrieve_context
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -53,9 +54,11 @@ async def send_message(body: ChatIn, user: CurrentUser = Depends(get_current_use
     )
     history = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
+    context = await retrieve_context(pool, owner_id=user.id, room_id=None, query=body.message)
+
     async def event_stream():
         full_reply = []
-        async for chunk in stream_chat_completion(history):
+        async for chunk in stream_chat_completion(history, context=context):
             full_reply.append(chunk)
             yield chunk
 

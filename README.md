@@ -23,13 +23,26 @@ locally for now.
 - **AI in group chat**: any message starting with `@ai` triggers an
   assistant reply, persisted and broadcast to the whole room like any other message.
 
-Not yet built (later phases): document upload/RAG, citations/abstention,
-caching, memory, multi-agent tools, deployment.
+**Phase 3 — Documents + RAG**
+- **Upload**: drop a `.txt`, `.md`, or `.pdf` (≤5MB) into your personal
+  workspace or into a room. Text is extracted, chunked, and embedded
+  **locally** (sentence-transformers, `all-MiniLM-L6-v2` — no embedding API
+  key, fully free, runs on CPU).
+- **Retrieval**: every chat message (personal or `@ai` in a room) searches
+  the relevant documents by vector similarity (`pgvector`) and, if something
+  relevant enough turns up, feeds it to the model as context before it
+  answers.
+- **Scoping**: personal documents are only searchable in your own personal
+  chat; room documents are shared with and searchable by everyone in that room.
+
+Not yet built (later phases): inline citations/source viewer, permissions
+beyond room membership, Redis caching, memory, multi-agent tools, deployment.
 
 ## 1. Create free accounts (5 min)
 
 1. **Supabase** — [supabase.com](https://supabase.com) → New project (free tier).
-   - In the SQL Editor, paste and run `db/schema.sql`, then `db/phase2_schema.sql`.
+   - In the SQL Editor, paste and run `db/schema.sql`, then
+     `db/phase2_schema.sql`, then `db/phase3_schema.sql`.
    - Database → Replication: confirm `room_messages` is listed under the
      `supabase_realtime` publication (the schema script adds it, but it's
      worth a glance — this is what makes group chat update live).
@@ -39,6 +52,11 @@ caching, memory, multi-agent tools, deployment.
      "Session pooler" one for `DATABASE_URL`.
 2. **Groq** — [console.groq.com/keys](https://console.groq.com/keys) → create a
    free API key.
+
+> **First run note:** the first time you upload a document, the backend
+> downloads the embedding model (~90MB, one-time, cached afterward) from
+> Hugging Face — make sure the machine running the backend has internet
+> access for that first request.
 
 ## 2. Backend setup
 
@@ -75,13 +93,20 @@ backend/
   app/routers/conversations.py
   app/routers/chat.py       Streams model output, persists messages
   app/routers/rooms.py       Rooms, join codes, group messages, @ai trigger
+  app/routers/documents.py    Upload, list, delete documents
+  app/embeddings.py         Local sentence-transformers embedding model
+  app/chunking.py            Overlapping text chunker
+  app/extract.py              Text extraction (txt/md/pdf)
+  app/retrieval.py            Vector similarity search (pgvector)
 db/schema.sql          Phase 1 tables + RLS policies
 db/phase2_schema.sql    Rooms, membership, room messages + Realtime publication
+db/phase3_schema.sql    Documents, chunks, vector index + RLS
 frontend/
   app/page.tsx           Sign in / sign up
   app/chat/page.tsx        Personal conversation list + streaming chat UI
   app/rooms/page.tsx        Create/join rooms
   app/rooms/[roomId]/page.tsx   Group chat with live sync + presence
+  components/DocumentsPanel.tsx  Upload/list/delete docs (personal or room-scoped)
   lib/supabase.ts        Browser Supabase client
   lib/api.ts               Typed calls to the FastAPI backend
 ```
@@ -92,7 +117,7 @@ frontend/
 |---|---|
 | 1 ✅ | Foundation — auth, personal chat, persistence |
 | 2 ✅ | Group rooms, invites, realtime sync, presence |
-| 3 | Document upload + RAG (pgvector retrieval) |
+| 3 ✅ | Document upload + RAG (pgvector retrieval) |
 | 4 | Citations, abstention, source viewer, permissions |
 | 5 | Redis caching, parallel retrieval, background workers |
 | 6 | Memory, tool calling, optional multi-agent workflows |

@@ -1,8 +1,13 @@
 import os
 import asyncpg
 from typing import Optional
+from pgvector.asyncpg import register_vector
 
 _pool: Optional[asyncpg.Pool] = None
+
+
+async def _init_connection(conn: asyncpg.Connection):
+    await register_vector(conn)
 
 
 async def init_pool():
@@ -15,6 +20,7 @@ async def init_pool():
         max_size=5,
         # Supabase's free-tier pooler is happier with statement caching off.
         statement_cache_size=0,
+        init=_init_connection,
     )
     return _pool
 

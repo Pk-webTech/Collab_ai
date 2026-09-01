@@ -49,6 +49,46 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
   return res.json();
 }
 
+export type Document = {
+  id: string;
+  filename: string;
+  char_count: number;
+  status: string;
+  created_at: string;
+};
+
+export async function listDocuments(roomId?: string): Promise<Document[]> {
+  const qs = roomId ? `?room_id=${roomId}` : "";
+  const res = await fetch(`${API_URL}/api/documents${qs}`, { headers: await authHeaders() });
+  if (!res.ok) throw new Error("Failed to load documents");
+  return res.json();
+}
+
+export async function uploadDocument(file: File, roomId?: string): Promise<Document> {
+  const form = new FormData();
+  form.append("file", file);
+  if (roomId) form.append("room_id", roomId);
+
+  const res = await fetch(`${API_URL}/api/documents/upload`, {
+    method: "POST",
+    headers: await authHeaders(), // no Content-Type -- browser sets multipart boundary
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? "Failed to upload document");
+  }
+  return res.json();
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/documents/${id}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to delete document");
+}
+
 export type Room = {
   id: string;
   name: string;

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from ..auth import get_current_user, CurrentUser
 from ..db import get_pool
 from ..llm import stream_chat_completion
+from ..retrieval import retrieve_context
 
 router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 
@@ -205,7 +206,8 @@ async def send_room_message(
         ]
 
         reply_parts = []
-        async for chunk in stream_chat_completion(history):
+        context = await retrieve_context(pool, owner_id=user.id, room_id=room_id, query=body.content)
+        async for chunk in stream_chat_completion(history, context=context):
             reply_parts.append(chunk)
         ai_reply = "".join(reply_parts) or "…"
 
