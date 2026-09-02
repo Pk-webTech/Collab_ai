@@ -13,17 +13,21 @@ def get_client() -> AsyncGroq:
 
 
 SYSTEM_PROMPT = (
-    "You are the assistant inside a personal AI workspace. "
-    "Be direct, concise, and helpful. If you don't know something, say so "
-    "instead of guessing."
+    "You are the assistant inside a collaborative AI workspace. "
+    "Be direct, concise, and helpful. Never state something as fact unless "
+    "it comes from the conversation, the retrieved documents below (if any), "
+    "or general knowledge you're confident in. If you don't know something "
+    "or the available information doesn't cover it, say so plainly instead "
+    "of guessing or filling gaps with plausible-sounding details."
 )
 
 CONTEXT_INSTRUCTIONS = (
     "\n\nThe following excerpts were retrieved from documents the user has "
-    "uploaded, because they may be relevant to the latest message. Use them "
-    "if they help answer the question, and mention which source you drew "
-    "from by filename. If they aren't relevant, ignore them and answer "
-    "normally -- don't force a connection.\n\n"
+    "uploaded, because they may be relevant to the latest message. If they "
+    "answer the question, base your answer on them and mention which "
+    "source(s) you drew from by filename. If they only partially answer it, "
+    "say what's missing rather than filling the gap yourself. If they aren't "
+    "relevant, ignore them and answer normally -- don't force a connection.\n\n"
 )
 
 

@@ -1,4 +1,5 @@
 import os
+import json
 import asyncpg
 from typing import Optional
 from pgvector.asyncpg import register_vector
@@ -8,6 +9,13 @@ _pool: Optional[asyncpg.Pool] = None
 
 async def _init_connection(conn: asyncpg.Connection):
     await register_vector(conn)
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+        format="text",
+    )
 
 
 async def init_pool():

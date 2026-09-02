@@ -16,11 +16,20 @@ export type Conversation = {
   updated_at: string;
 };
 
+export type Source = {
+  document_id: string;
+  filename: string;
+  chunk_index: number;
+  snippet: string;
+  distance: number;
+};
+
 export type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
   created_at: string;
+  sources?: Source[] | null;
 };
 
 export async function listConversations(): Promise<Conversation[]> {
@@ -100,6 +109,7 @@ export type Room = {
 export type RoomMember = {
   user_id: string;
   display_name: string | null;
+  role: "owner" | "member";
   joined_at: string;
 };
 
@@ -110,6 +120,7 @@ export type RoomMessage = {
   display_name: string | null;
   content: string;
   created_at: string;
+  sources?: Source[] | null;
 };
 
 export async function listRooms(): Promise<Room[]> {
@@ -136,6 +147,33 @@ export async function joinRoom(joinCode: string): Promise<Room> {
   });
   if (!res.ok) throw new Error("Failed to join room — check the code");
   return res.json();
+}
+
+export async function renameRoom(roomId: string, name: string): Promise<Room> {
+  const res = await fetch(`${API_URL}/api/rooms/${roomId}`, {
+    method: "PATCH",
+    headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error("Failed to rename room");
+  return res.json();
+}
+
+export async function deleteRoom(roomId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/rooms/${roomId}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to delete room");
+}
+
+/** Pass the current user's own id to leave; the owner can pass any other member's id to remove them. */
+export async function removeOrLeaveRoom(roomId: string, memberId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/rooms/${roomId}/members/${memberId}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to update membership");
 }
 
 export async function getRoomMembers(roomId: string): Promise<RoomMember[]> {

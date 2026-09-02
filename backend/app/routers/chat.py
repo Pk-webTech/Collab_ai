@@ -54,19 +54,24 @@ async def send_message(body: ChatIn, user: CurrentUser = Depends(get_current_use
     )
     history = [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
-    context = await retrieve_context(pool, owner_id=user.id, room_id=None, query=body.message)
+    retrieval = await retrieve_context(pool, owner_id=user.id, room_id=None, query=body.message)
 
     async def event_stream():
         full_reply = []
-        async for chunk in stream_chat_completion(history, context=context):
+        async for chunk in stream_chat_completion(history, context=retrieval.context):
             full_reply.append(chunk)
             yield chunk
 
-        # Persist the assistant's full reply once streaming finishes.
+        # Persist the assistant's full reply (plus which sources backed it,
+        # if any) once streaming finishes.
         await pool.execute(
-            "insert into messages (conversation_id, role, content) values ($1, 'assistant', $2)",
+            """
+            insert into messages (conversation_id, role, content, sources)
+            values ($1, 'assistant', $2, $3)
+            """,
             body.conversation_id,
             "".join(full_reply),
+            retrieval.sources or None,
         )
         await pool.execute(
             "update conversations set updated_at = now() where id = $1",

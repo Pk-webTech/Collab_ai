@@ -12,6 +12,7 @@ import {
   sendMessageStream,
 } from "@/lib/api";
 import DocumentsPanel from "@/components/DocumentsPanel";
+import SourcesList from "@/components/SourcesList";
 
 export default function ChatPage() {
   const router = useRouter();
@@ -90,6 +91,9 @@ export default function ChatPage() {
           return next;
         });
       });
+      // Re-fetch so temp ids get replaced with real ones and the assistant
+      // message picks up its persisted citation sources (if any).
+      setMessages(await getMessages(conversationId));
     } finally {
       setStreaming(false);
     }
@@ -177,6 +181,7 @@ export default function ChatPage() {
                   {m.role === "user" ? "You" : "Assistant"}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+                {m.role === "assistant" && m.sources && <SourcesList sources={m.sources} />}
               </div>
             ))}
             <div ref={bottomRef} />

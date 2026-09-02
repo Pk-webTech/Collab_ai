@@ -20,6 +20,7 @@ class MessageOut(BaseModel):
     role: str
     content: str
     created_at: str
+    sources: list[dict] | None = None
 
 
 class CreateConversationIn(BaseModel):
@@ -71,7 +72,7 @@ async def get_messages(conversation_id: UUID, user: CurrentUser = Depends(get_cu
 
     rows = await pool.fetch(
         """
-        select id, role, content, created_at
+        select id, role, content, created_at, sources
         from messages
         where conversation_id = $1
         order by created_at asc

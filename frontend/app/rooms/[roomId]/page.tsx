@@ -7,12 +7,16 @@ import {
   Room,
   RoomMember,
   RoomMessage,
+  deleteRoom,
   getRoomMembers,
   getRoomMessages,
   listRooms,
+  removeOrLeaveRoom,
+  renameRoom,
   sendRoomMessage,
 } from "@/lib/api";
 import DocumentsPanel from "@/components/DocumentsPanel";
+import SourcesList from "@/components/SourcesList";
 
 export default function RoomChatPage() {
   const router = useRouter();
@@ -26,8 +30,16 @@ export default function RoomChatPage() {
   const [messages, setMessages] = useState<RoomMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const myId = useRef<string | null>(null);
+
+  const isOwner = room && myId.current && room.owner_id === myId.current;
+
+  async function refreshMembers() {
+    setMembers(await getRoomMembers(roomId));
+  }
 
   useEffect(() => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
@@ -47,7 +59,9 @@ export default function RoomChatPage() {
         getRoomMembers(roomId),
         getRoomMessages(roomId),
       ]);
-      setRoom(rooms.find((r) => r.id === roomId) ?? null);
+      const found = rooms.find((r) => r.id === roomId) ?? null;
+      setRoom(found);
+      setNameDraft(found?.name ?? "");
       setMembers(memberList);
       setMessages(messageList);
       setReady(true);
@@ -73,6 +87,7 @@ export default function RoomChatPage() {
                   display_name: null, // backfilled from members list in render
                   content: row.content,
                   created_at: row.created_at,
+                  sources: row.sources ?? null,
                 },
               ];
             });
@@ -117,6 +132,33 @@ export default function RoomChatPage() {
     }
   }
 
+  async function handleRename(e: React.FormEvent) {
+    e.preventDefault();
+    if (!nameDraft.trim() || !room) return;
+    const updated = await renameRoom(roomId, nameDraft.trim());
+    setRoom(updated);
+    setRenaming(false);
+  }
+
+  async function handleDeleteRoom() {
+    if (!confirm("Delete this room for everyone? This can't be undone.")) return;
+    await deleteRoom(roomId);
+    router.push("/rooms");
+  }
+
+  async function handleLeaveRoom() {
+    if (!myId.current) return;
+    if (!confirm("Leave this room?")) return;
+    await removeOrLeaveRoom(roomId, myId.current);
+    router.push("/rooms");
+  }
+
+  async function handleRemoveMember(memberId: string) {
+    if (!confirm("Remove this member from the room?")) return;
+    await removeOrLeaveRoom(roomId, memberId);
+    await refreshMembers();
+  }
+
   if (!ready) {
     return (
       <main style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
@@ -129,44 +171,95 @@ export default function RoomChatPage() {
     <main style={{ display: "flex", height: "100vh" }}>
       <aside
         style={{
-          width: 220,
+          width: 240,
           borderRight: "1px solid var(--border)",
           background: "var(--panel)",
           padding: 16,
+          overflowY: "auto",
         }}
       >
         <a href="/rooms" style={{ fontSize: 12, color: "var(--text-muted)" }}>
           ← All rooms
         </a>
-        <h2 style={{ fontSize: 16, margin: "12px 0 4px" }}>{room?.name}</h2>
+
+        {renaming ? (
+          <form onSubmit={handleRename} style={{ margin: "12px 0 4px" }}>
+            <input
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              autoFocus
+              onBlur={handleRename}
+              style={renameInputStyle}
+            />
+          </form>
+        ) : (
+          <h2
+            style={{ fontSize: 16, margin: "12px 0 4px", cursor: isOwner ? "pointer" : "default" }}
+            onClick={() => isOwner && setRenaming(true)}
+            title={isOwner ? "Click to rename" : undefined}
+          >
+            {room?.name}
+          </h2>
+        )}
         <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 16px" }}>
           Code: {room?.join_code}
         </p>
+
         <h3 style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 8px" }}>
           Members ({members.length})
         </h3>
         {members.map((m) => (
           <div
             key={m.user_id}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", fontSize: 13 }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 6,
+              padding: "4px 0",
+              fontSize: 13,
+            }}
           >
-            <span
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: onlineIds.has(m.user_id) ? "var(--accent)" : "var(--border)",
-              }}
-            />
-            {m.display_name}
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: onlineIds.has(m.user_id) ? "var(--accent)" : "var(--border)",
+                }}
+              />
+              {m.display_name}
+              {m.role === "owner" && (
+                <span style={{ fontSize: 10, color: "var(--text-muted)" }}>owner</span>
+              )}
+            </span>
+            {isOwner && m.role !== "owner" && (
+              <button onClick={() => handleRemoveMember(m.user_id)} style={smallActionStyle}>
+                remove
+              </button>
+            )}
           </div>
         ))}
+
         <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16 }}>
           Type <code>@ai</code> at the start of a message to bring the assistant in.
         </p>
 
         <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
           <DocumentsPanel roomId={roomId} />
+        </div>
+
+        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+          {isOwner ? (
+            <button onClick={handleDeleteRoom} style={dangerButtonStyle}>
+              Delete room
+            </button>
+          ) : (
+            <button onClick={handleLeaveRoom} style={dangerButtonStyle}>
+              Leave room
+            </button>
+          )}
         </div>
       </aside>
 
@@ -179,6 +272,7 @@ export default function RoomChatPage() {
                   {m.sender_type === "ai" ? "Assistant" : nameFor(m.user_id)}
                 </div>
                 <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+                {m.sender_type === "ai" && m.sources && <SourcesList sources={m.sources} />}
               </div>
             ))}
             <div ref={bottomRef} />
@@ -230,4 +324,34 @@ const sendButtonStyle: React.CSSProperties = {
   color: "#0d1310",
   fontWeight: 600,
   fontSize: 14,
+};
+
+const renameInputStyle: React.CSSProperties = {
+  width: "100%",
+  background: "var(--panel-raised)",
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  padding: "6px 8px",
+  color: "var(--text)",
+  fontSize: 15,
+  fontWeight: 600,
+  outline: "none",
+};
+
+const smallActionStyle: React.CSSProperties = {
+  background: "none",
+  border: "none",
+  color: "var(--danger)",
+  fontSize: 11,
+  padding: 0,
+};
+
+const dangerButtonStyle: React.CSSProperties = {
+  width: "100%",
+  background: "transparent",
+  border: "1px solid var(--danger)",
+  borderRadius: 8,
+  padding: "8px 12px",
+  color: "var(--danger)",
+  fontSize: 13,
 };
