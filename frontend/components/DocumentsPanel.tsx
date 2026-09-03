@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
 import { Document, deleteDocument, listDocuments, uploadDocument } from "@/lib/api";
 
 export default function DocumentsPanel({ roomId }: { roomId?: string }) {
@@ -13,8 +14,64 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
     setDocs(await listDocuments(roomId));
   }
 
+  // Initial load, plus a live subscription so a document's status flips
+  // from "processing" to "ready" (or "failed") on screen the moment the
+  // backend's background task finishes -- no polling, no manual refresh.
+  // Works for uploads from other room members too.
   useEffect(() => {
     refresh();
+
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    (async () => {
+      let filter: string;
+      if (roomId) {
+        filter = `room_id=eq.${roomId}`;
+      } else {
+        const { data } = await supabase.auth.getSession();
+        const uid = data.session?.user.id;
+        if (!uid) return;
+        filter = `owner_id=eq.${uid}`;
+      }
+
+      channel = supabase
+        .channel(`documents:${roomId ?? "personal"}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "documents", filter },
+          (payload) => {
+            const row = (payload.new ?? payload.old) as any;
+            // The personal-scope filter is by owner_id only (Realtime can't
+            // filter on two columns at once), so drop the user's own room
+            // documents here -- they belong in that room's panel, not this one.
+            if (!roomId && row.room_id) return;
+
+            if (payload.eventType === "DELETE") {
+              setDocs((prev) => prev.filter((d) => d.id !== row.id));
+              return;
+            }
+
+            const updated: Document = {
+              id: row.id,
+              filename: row.filename,
+              char_count: row.char_count,
+              status: row.status,
+              created_at: row.created_at,
+            };
+            setDocs((prev) => {
+              const exists = prev.some((d) => d.id === updated.id);
+              return exists
+                ? prev.map((d) => (d.id === updated.id ? updated : d))
+                : [updated, ...prev];
+            });
+          }
+        )
+        .subscribe();
+    })();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
@@ -24,8 +81,11 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
     setError(null);
     setUploading(true);
     try {
-      await uploadDocument(file, roomId);
-      await refresh();
+      // The upload call now returns as soon as the file is accepted -- the
+      // row starts out "processing" and the Realtime subscription above
+      // flips it to "ready" a moment later once chunking/embedding finishes.
+      const doc = await uploadDocument(file, roomId);
+      setDocs((prev) => [doc, ...prev]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -77,7 +137,7 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
             }}
           >
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              📄 {d.filename}
+              {d.status === "processing" ? "⏳" : d.status === "failed" ? "⚠️" : "📄"} {d.filename}
             </span>
             <button onClick={() => handleDelete(d.id)} style={deleteButtonStyle}>
               ✕

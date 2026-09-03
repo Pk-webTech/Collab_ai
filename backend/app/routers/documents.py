@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 
 from ..auth import get_current_user, CurrentUser
@@ -29,6 +29,35 @@ async def _assert_room_member(pool, room_id: UUID, user_id: str):
     )
     if not is_member:
         raise HTTPException(403, "You're not a member of this room")
+
+
+async def _process_document(document_id: UUID, text: str):
+    """
+    Runs after the upload response has already been sent (see
+    BackgroundTasks below). Chunking + embedding is the slow part of an
+    upload -- doing it here means the request returns immediately with
+    status 'processing', and the frontend picks up the 'ready' (or 'failed')
+    transition live via the Supabase Realtime subscription on `documents`
+    (see db/phase5_schema.sql).
+    """
+    pool = get_pool()
+    try:
+        chunks = chunk_text(text)
+        if chunks:
+            vectors = await asyncio.to_thread(embed_texts, chunks)
+            rows_to_insert = [
+                (document_id, i, chunk, vector) for i, (chunk, vector) in enumerate(zip(chunks, vectors))
+            ]
+            await pool.executemany(
+                """
+                insert into document_chunks (document_id, chunk_index, content, embedding)
+                values ($1, $2, $3, $4)
+                """,
+                rows_to_insert,
+            )
+        await pool.execute("update documents set status = 'ready' where id = $1", document_id)
+    except Exception:
+        await pool.execute("update documents set status = 'failed' where id = $1", document_id)
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -60,6 +89,7 @@ async def list_documents(
 
 @router.post("/upload", response_model=DocumentOut)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     room_id: UUID | None = Form(default=None),
     user: CurrentUser = Depends(get_current_user),
@@ -92,23 +122,12 @@ async def upload_document(
         len(text),
     )
 
-    chunks = chunk_text(text)
-    if chunks:
-        vectors = await asyncio.to_thread(embed_texts, chunks)
-        rows_to_insert = [
-            (doc["id"], i, chunk, vector) for i, (chunk, vector) in enumerate(zip(chunks, vectors))
-        ]
-        await pool.executemany(
-            """
-            insert into document_chunks (document_id, chunk_index, content, embedding)
-            values ($1, $2, $3, $4)
-            """,
-            rows_to_insert,
-        )
+    # Chunking + embedding happens after the response is returned -- the
+    # frontend gets the 'processing' row now and the 'ready' update later
+    # via Realtime, rather than the request hanging until it's all done.
+    background_tasks.add_task(_process_document, doc["id"], text)
 
-    await pool.execute("update documents set status = 'ready' where id = $1", doc["id"])
-
-    return {**dict(doc), "status": "ready"}
+    return dict(doc)
 
 
 @router.delete("/{document_id}")

@@ -223,3 +223,43 @@ export async function sendMessageStream(
     onChunk(decoder.decode(value, { stream: true }));
   }
 }
+
+export type Memory = {
+  id: string;
+  content: string;
+  created_at: string;
+};
+
+export async function listMemories(): Promise<Memory[]> {
+  const res = await fetch(`${API_URL}/api/memories`, { headers: await authHeaders() });
+  if (!res.ok) throw new Error("Failed to load memories");
+  return res.json();
+}
+
+export async function createMemory(content: string): Promise<Memory> {
+  const res = await fetch(`${API_URL}/api/memories`, {
+    method: "POST",
+    headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error("Failed to add memory");
+  return res.json();
+}
+
+export async function updateMemory(id: string, content: string): Promise<Memory> {
+  const res = await fetch(`${API_URL}/api/memories/${id}`, {
+    method: "PATCH",
+    headers: { ...(await authHeaders()), "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok) throw new Error("Failed to update memory");
+  return res.json();
+}
+
+export async function deleteMemory(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/api/memories/${id}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  if (!res.ok) throw new Error("Failed to delete memory");
+}

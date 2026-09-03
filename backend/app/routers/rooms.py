@@ -1,6 +1,7 @@
 import secrets
 import string
 from uuid import UUID
+import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -252,22 +253,23 @@ async def send_room_message(
     result["display_name"] = display_name
 
     if body.content.strip().lower().startswith(AI_TRIGGER):
-        history_rows = await pool.fetch(
-            """
-            select sender_type, content from room_messages
-            where room_id = $1
-            order by created_at desc
-            limit $2
-            """,
-            room_id,
-            HISTORY_LIMIT,
+        history_rows, retrieval = await asyncio.gather(
+            pool.fetch(
+                """
+                select sender_type, content from room_messages
+                where room_id = $1
+                order by created_at desc
+                limit $2
+                """,
+                room_id,
+                HISTORY_LIMIT,
+            ),
+            retrieve_context(pool, owner_id=user.id, room_id=room_id, query=body.content),
         )
         history = [
             {"role": "assistant" if r["sender_type"] == "ai" else "user", "content": r["content"]}
             for r in reversed(history_rows)
         ]
-
-        retrieval = await retrieve_context(pool, owner_id=user.id, room_id=room_id, query=body.content)
 
         reply_parts = []
         async for chunk in stream_chat_completion(history, context=retrieval.context):

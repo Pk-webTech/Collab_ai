@@ -53,14 +53,45 @@ locally for now.
   members; members can leave. Enforced both in the backend (checked against
   the verified JWT) and via RLS as a second line of defense.
 
-Not yet built (later phases): Redis caching, background workers, memory,
-tool calling, multi-agent workflows, observability, deployment.
+**Phase 5 — Performance**
+
+- **Caching**: document-retrieval results are cached in Redis (free tier via
+  Upstash) for 5 minutes per (scope, question) — repeated or near-duplicate
+  questions, common in a group room, skip re-embedding and re-searching.
+  Entirely optional: leave `REDIS_URL` unset and the app runs exactly as
+  before, just without this layer.
+- **Parallel retrieval**: fetching recent chat history and searching
+  documents no longer happen one after another — they're independent reads,
+  so both requests fire concurrently, cutting latency before the model even
+  starts replying.
+- **Background uploads**: uploading a document now returns immediately with
+  status `processing`; chunking and embedding happen in a background task
+  instead of blocking the request. The sidebar updates live to `ready` (or
+  `failed`) via Realtime once it's done — no polling, no page refresh.
+
+**Phase 6 — Memory & Tools**
+
+- **Long-term memory**: after each personal chat reply, a background call
+  asks the model to pull out one durable fact worth remembering (e.g.
+  preferences, ongoing projects) and stores it — never blocking the reply
+  itself. A "Memory" panel in the personal chat sidebar shows everything
+  remembered so far; click any entry to edit it, or add your own. Capped at
+  the 50 most recent facts. Memory is personal-only — it's never passed into
+  group room replies, so one member's remembered facts can't leak to others.
+- **Tool calling**: the assistant can call a calculator and a clock
+  mid-reply via Groq's function calling (e.g. "what's 18% of 245?" or "what
+  time is it in UTC?"), in both personal chat and `@ai` room replies. Both
+  tools run locally — no external API, no extra cost.
+
+Not yet built (later phases): multi-agent workflows, observability, rate
+limits, security hardening, deployment.
 
 ## 1. Create free accounts (5 min)
 
 1. **Supabase** — [supabase.com](https://supabase.com) → New project (free tier).
    - In the SQL Editor, paste and run `db/schema.sql`, then
-     `db/phase2_schema.sql`, then `db/phase3_schema.sql`, then `db/phase4_schema.sql`.
+     `db/phase2_schema.sql`, then `db/phase3_schema.sql`, then
+     `db/phase4_schema.sql`, then `db/phase5_schema.sql`, then `db/phase6_schema.sql`.
    - Database → Replication: confirm `room_messages` is listed under the
      `supabase_realtime` publication (the schema script adds it, but it's
      worth a glance — this is what makes group chat update live).
@@ -70,6 +101,10 @@ tool calling, multi-agent workflows, observability, deployment.
      "Session pooler" one for `DATABASE_URL`.
 2. **Groq** — [console.groq.com/keys](https://console.groq.com/keys) → create a
    free API key.
+3. **Upstash Redis (optional)** — [upstash.com](https://upstash.com) → New
+   database (free tier) → copy the `rediss://` connection string into
+   `REDIS_URL`. Skip this and leave it blank if you don't want caching yet;
+   nothing else depends on it.
 
 > **First run note:** the first time you upload a document, the backend
 > downloads the embedding model (~90MB, one-time, cached afterward) from
@@ -112,21 +147,28 @@ backend/
   app/routers/chat.py       Streams model output, persists messages
   app/routers/rooms.py       Rooms, join codes, group messages, @ai trigger
   app/routers/documents.py    Upload, list, delete documents
+  app/routers/memories.py      Memory CRUD (list/add/edit/delete)
   app/embeddings.py         Local sentence-transformers embedding model
   app/chunking.py            Overlapping text chunker
   app/extract.py              Text extraction (txt/md/pdf)
-  app/retrieval.py            Vector similarity search (pgvector)
+  app/retrieval.py            Vector similarity search (pgvector) + Redis caching
+  app/cache.py                 Optional Redis caching helper (Upstash free tier)
+  app/memory.py                 Background fact extraction for long-term memory
+  app/tools.py                   Calculator + clock, exposed to the model as tools
 db/schema.sql          Phase 1 tables + RLS policies
 db/phase2_schema.sql    Rooms, membership, room messages + Realtime publication
 db/phase3_schema.sql    Documents, chunks, vector index + RLS
 db/phase4_schema.sql    Citation storage, room roles + owner-only RLS
+db/phase5_schema.sql    Realtime on documents (live upload-status updates)
+db/phase6_schema.sql    Long-term memory table + RLS
 frontend/
   app/page.tsx           Sign in / sign up
   app/chat/page.tsx        Personal conversation list + streaming chat UI
   app/rooms/page.tsx        Create/join rooms
   app/rooms/[roomId]/page.tsx   Group chat, live sync, presence, roles/permissions
-  components/DocumentsPanel.tsx  Upload/list/delete docs (personal or room-scoped)
+  components/DocumentsPanel.tsx  Upload/list/delete docs, live status updates
   components/SourcesList.tsx      Collapsible citation viewer
+  components/MemoryPanel.tsx       View/add/edit/delete remembered facts
   lib/supabase.ts        Browser Supabase client
   lib/api.ts               Typed calls to the FastAPI backend
 ```
@@ -139,10 +181,10 @@ frontend/
 | 2 ✅  | Group rooms, invites, realtime sync, presence              |
 | 3 ✅  | Document upload + RAG (pgvector retrieval)                 |
 | 4 ✅  | Citations, abstention, source viewer, permissions          |
-| 5     | Redis caching, parallel retrieval, background workers      |
-| 6     | Memory, tool calling, optional multi-agent workflows       |
+| 5 ✅  | Redis caching, parallel retrieval, background workers      |
+| 6 ✅  | Memory, tool calling                                       |
 | 7     | Observability, rate limits, security hardening, deployment |
 
-Free-tier services planned for later phases: Upstash Redis (Phase 5),
-Supabase Storage (Phase 3, for uploaded documents), Vercel + Render free
-tiers (Phase 7, when you're ready to deploy).
+Free-tier services planned for later phases: Supabase Storage (raw file
+retention, if you want it beyond extracted text), Vercel + Render free tiers
+(Phase 7, when you're ready to deploy).

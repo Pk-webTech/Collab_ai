@@ -12,6 +12,7 @@ import {
   sendMessageStream,
 } from "@/lib/api";
 import DocumentsPanel from "@/components/DocumentsPanel";
+import MemoryPanel from "@/components/MemoryPanel";
 import SourcesList from "@/components/SourcesList";
 
 export default function ChatPage() {
@@ -155,6 +156,9 @@ export default function ChatPage() {
         </div>
         <div style={{ padding: 16, borderTop: "1px solid var(--border)" }}>
           <DocumentsPanel />
+        </div>
+        <div style={{ padding: 16, borderTop: "1px solid var(--border)", maxHeight: 220, overflowY: "auto" }}>
+          <MemoryPanel />
         </div>
         <div style={{ padding: 16, borderTop: "1px solid var(--border)" }}>
           <button onClick={handleSignOut} style={signOutButtonStyle}>

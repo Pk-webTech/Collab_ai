@@ -10,3 +10,4 @@ python-multipart==0.0.9
 pypdf==4.3.1
 sentence-transformers==3.1.1
 pgvector==0.3.4
+redis==5.0.8
