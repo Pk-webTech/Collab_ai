@@ -1,269 +1,382 @@
-# Collaborative AI Workspace — Phase 1 + 2
+# Collaborative AI Workspace
 
-Personal + group AI workspace. Built entirely on free tiers — Supabase
-(Postgres + Auth + Realtime, free project) and Groq (free LLM API). Runs
-locally for now.
+A self-hosted AI workspace where individuals and teams chat with an assistant
+that is grounded in their own documents. Personal conversations stay private;
+shared rooms let a group talk to the same assistant over the same material, in
+real time.
 
-## What's included
+Built entirely on free-tier infrastructure. The embedding model runs locally on
+CPU, so the only external service that costs anything at scale is the LLM API.
 
-**Phase 1 — Foundation**
+---
 
-- **Auth**: Supabase email/password auth (frontend), verified server-side via JWT (backend).
-- **Personal chat**: create conversations, send messages, streamed AI replies.
-- **Persistence**: every message (user + assistant) stored in Postgres.
-- **Isolation groundwork**: `pgvector` extension enabled and RLS policies in
-  place now, so Phase 3 (RAG) doesn't need a schema rewrite later.
+## What it does
 
-**Phase 2 — Group Collaboration**
+**Personal chat.** Create conversations, send messages, and get streamed replies
+token by token. Everything is persisted to Postgres, so history survives
+reloads and sessions.
 
-- **Rooms**: create a room (gets a 6-character join code) or join one with a code.
-- **Real-time sync**: new messages appear for every member instantly via
-  **Supabase Realtime** (Postgres change subscriptions) — no backend
-  WebSocket server needed.
-- **Presence**: sidebar shows who's currently online in the room (Supabase
-  Realtime Presence, client-side only).
-- **AI in group chat**: any message starting with `@ai` triggers an
-  assistant reply, persisted and broadcast to the whole room like any other message.
+**Group rooms.** Create a room and share its six-character join code. Anyone
+with the code can join. Messages sync to every member instantly, and a presence
+indicator shows who is currently online. Prefix a message with `@ai` to bring
+the assistant into the conversation — its reply is persisted and broadcast to
+the whole room like any other message.
 
-**Phase 3 — Documents + RAG**
+**Document grounding (RAG).** Upload a `.txt`, `.md`, or `.pdf` (up to 5 MB) to
+your personal workspace or to a room. The text is extracted, split into
+overlapping chunks, and embedded locally. Every subsequent message searches
+those documents by vector similarity and, when something relevant turns up,
+feeds it to the model as context before it answers.
 
-- **Upload**: drop a `.txt`, `.md`, or `.pdf` (≤5MB) into your personal
-  workspace or into a room. Text is extracted, chunked, and embedded
-  **locally** (sentence-transformers, `all-MiniLM-L6-v2` — no embedding API
-  key, fully free, runs on CPU).
-- **Retrieval**: every chat message (personal or `@ai` in a room) searches
-  the relevant documents by vector similarity (`pgvector`) and, if something
-  relevant enough turns up, feeds it to the model as context before it
-  answers.
-- **Scoping**: personal documents are only searchable in your own personal
-  chat; room documents are shared with and searchable by everyone in that room.
+**Scoped retrieval.** Personal documents are searchable only in your own
+conversations. Room documents are shared with, and searchable by, every member
+of that room. The two never mix.
 
-**Phase 4 — Trust Layer**
+**Citations.** When a reply draws on retrieved documents, the exact chunks it
+used are stored alongside it. A collapsible "Sources" line under the reply
+shows the filenames and expands to the underlying snippets, so any claim can be
+traced back to its origin. Citations persist across reloads rather than
+existing only for the live response.
 
-- **Citations**: every AI reply that used retrieved documents stores exactly
-  which chunks it drew from. A collapsible "Sources" line under the reply
-  shows the filenames, and expands to the actual snippets so you can verify
-  the claim yourself — this persists across reloads, not just for the live response.
-- **Abstention**: the system prompt now explicitly tells the model to say
-  what's missing rather than filling gaps, and to only state things as fact
-  when they're grounded in the conversation, the retrieved documents, or
-  general knowledge it's confident in.
-- **Room permissions**: room creators are now `owner`s, everyone else who
-  joins is a `member`. Owners can rename or delete the room and remove
-  members; members can leave. Enforced both in the backend (checked against
-  the verified JWT) and via RLS as a second line of defense.
+**Abstention.** The system prompt directs the model to say what is missing
+rather than filling gaps, and to state things as fact only when they are
+grounded in the conversation, the retrieved documents, or general knowledge it
+is confident in.
 
-**Phase 5 — Performance**
+**Long-term memory.** After each personal reply, a background call extracts one
+durable fact worth remembering — a preference, an ongoing project, a
+constraint — and stores it. A Memory panel shows everything remembered so far;
+entries can be edited, added, or removed by hand. Capped at the 50 most recent
+facts. Memory is personal-only and is never passed into room replies, so one
+member's facts cannot leak to others.
 
-- **Caching**: document-retrieval results are cached in Redis (free tier via
-  Upstash) for 5 minutes per (scope, question) — repeated or near-duplicate
-  questions, common in a group room, skip re-embedding and re-searching.
-  Entirely optional: leave `REDIS_URL` unset and the app runs exactly as
-  before, just without this layer.
-- **Parallel retrieval**: fetching recent chat history and searching
-  documents no longer happen one after another — they're independent reads,
-  so both requests fire concurrently, cutting latency before the model even
-  starts replying.
-- **Background uploads**: uploading a document now returns immediately with
-  status `processing`; chunking and embedding happen in a background task
-  instead of blocking the request. The sidebar updates live to `ready` (or
-  `failed`) via Realtime once it's done — no polling, no page refresh.
+**Tool calling.** The assistant can call a calculator and a clock mid-reply via
+function calling, in both personal chat and room replies. Both run locally.
 
-**Phase 6 — Memory & Tools**
+**Room permissions.** Room creators are owners; everyone else who joins is a
+member. Owners can rename or delete the room and remove members. Members can
+leave. Enforced in the backend against the verified JWT, with row-level
+security in the database as a second line of defense.
 
-- **Long-term memory**: after each personal chat reply, a background call
-  asks the model to pull out one durable fact worth remembering (e.g.
-  preferences, ongoing projects) and stores it — never blocking the reply
-  itself. A "Memory" panel in the personal chat sidebar shows everything
-  remembered so far; click any entry to edit it, or add your own. Capped at
-  the 50 most recent facts. Memory is personal-only — it's never passed into
-  group room replies, so one member's remembered facts can't leak to others.
-- **Tool calling**: the assistant can call a calculator and a clock
-  mid-reply via Groq's function calling (e.g. "what's 18% of 245?" or "what
-  time is it in UTC?"), in both personal chat and `@ai` room replies. Both
-  tools run locally — no external API, no extra cost.
+---
 
-**Phase 7 — Observability, Rate Limits, Security & Deployment**
+## Architecture
 
-- **Observability**: every request logs one structured line (method, path,
-  status, duration, a short request id echoed back as `X-Request-ID`), and
-  unhandled errors are logged with a full traceback server-side while the
-  client only ever sees a generic `500`. Control verbosity with `LOG_LEVEL`.
-- **Rate limits**: per-user limits on chat messages, room messages, and
-  uploads (defaults: 20/30/10 per minute — tune via env vars), so one
-  runaway client can't blow through your free-tier Groq/Supabase quota.
-  In-memory, so it resets on restart and only applies per-instance —
-  correct for Render's free single-instance plan.
-- **Security hardening**: defensive response headers on both frontend and
-  backend (`X-Frame-Options`, `X-Content-Type-Options`, etc.), CORS locked
-  to specific methods/headers instead of a wildcard, startup fails fast
-  with a clear message if a required env var is missing instead of
-  crashing confusingly mid-request, and unhandled exceptions never leak
-  internals (stack traces, DB errors) to the client.
-- **Deployment**: backend → Render (free web service), frontend → Vercel
-  (free). See the **Deployment** section below for exact steps.
+```
+┌─────────────────┐         ┌──────────────────┐
+│  Next.js app    │────────▶│  FastAPI backend │
+│  (browser)      │  REST   │  (Python)        │
+└────────┬────────┘         └────────┬─────────┘
+         │                           │
+         │ Realtime (WebSocket)      │ SQL
+         │                           │
+         ▼                           ▼
+   ┌──────────────────────────────────────┐        ┌──────────┐
+   │  Supabase: Postgres + pgvector       │        │  Groq    │
+   │  Auth, Realtime, row-level security  │        │  (LLM)   │
+   └──────────────────────────────────────┘        └──────────┘
+                                                   ┌──────────┐
+                                                   │  Redis   │
+                                                   │ (cache)  │
+                                                   └──────────┘
+```
 
-This covers everything in the roadmap except multi-agent workflows, which
-the plan marked optional and this build skips.
+**Authentication.** The browser authenticates against Supabase Auth and sends
+the resulting JWT to the backend, which verifies it on every request — via
+Supabase's JWKS endpoint for asymmetric tokens, falling back to the legacy
+shared secret for older projects. No session state is kept server-side.
 
-## 1. Create free accounts (5 min)
+**Real-time sync.** Group chat and live upload status use Supabase Realtime
+subscriptions directly from the browser, so there is no WebSocket server to
+run or scale. The backend writes to Postgres; Postgres change events fan out to
+every subscribed client.
 
-1. **Supabase** — [supabase.com](https://supabase.com) → New project (free tier).
-   - In the SQL Editor, paste and run `db/schema.sql`, then
-     `db/phase2_schema.sql`, then `db/phase3_schema.sql`, then
-     `db/phase4_schema.sql`, then `db/phase5_schema.sql`, then `db/phase6_schema.sql`.
-     (Phase 7 adds no new SQL.)
-   - Database → Replication: confirm `room_messages` is listed under the
-     `supabase_realtime` publication (the schema script adds it, but it's
-     worth a glance — this is what makes group chat update live).
-   - Project Settings → API: copy `Project URL` and `anon public` key.
-   - Project Settings → API → JWT Settings: copy the `JWT Secret`.
-   - Project Settings → Database: copy the connection string (URI). Use the
-     "Session pooler" one for `DATABASE_URL`.
-2. **Groq** — [console.groq.com/keys](https://console.groq.com/keys) → create a
-   free API key.
-3. **Upstash Redis (optional)** — [upstash.com](https://upstash.com) → New
-   database (free tier) → copy the `rediss://` connection string into
-   `REDIS_URL`. Skip this and leave it blank if you don't want caching yet;
-   nothing else depends on it.
+**Retrieval.** Embeddings are computed locally with `all-MiniLM-L6-v2` (384
+dimensions) and stored in a `pgvector` column with an IVFFlat index for cosine
+similarity. Query embedding runs in a worker thread so it never blocks the
+event loop. Results are cached in Redis per scope and query when configured.
 
-> **First run note:** the first time you upload a document, the backend
-> downloads the embedding model (~90MB, one-time, cached afterward) from
-> Hugging Face — make sure the machine running the backend has internet
-> access for that first request.
+**Background work.** Document chunking and embedding, AI replies in rooms, and
+memory extraction all run after their HTTP response is sent, so no request
+blocks on slow work. Uploads return immediately with status `processing` and
+flip to `ready` over Realtime when indexing completes.
 
-## 2. Backend setup
+**Two layers of authorization.** The backend connects as the `postgres` role
+and enforces ownership and membership itself using the verified JWT. Row-level
+security policies independently govern any direct reads the browser makes
+through Supabase, including Realtime subscriptions.
+
+---
+
+## Tech stack
+
+| Layer      | Choice                                                 |
+| ---------- | ------------------------------------------------------ |
+| Frontend   | Next.js 16 (App Router), React 18, TypeScript          |
+| Backend    | FastAPI, Python 3.11+, `asyncpg`                       |
+| Database   | Postgres 15 with `pgvector` (Supabase)                 |
+| Auth       | Supabase Auth (JWT, verified server-side)              |
+| Real-time  | Supabase Realtime (Postgres change subscriptions)      |
+| LLM        | Groq (`openai/gpt-oss-120b` by default)                |
+| Embeddings | `sentence-transformers`, `all-MiniLM-L6-v2`, local CPU |
+| Cache      | Redis (optional; Upstash free tier)                    |
+
+---
+
+## Getting started
+
+### Prerequisites
+
+- Python 3.11 or newer
+- Node.js 20.9 or newer
+- A Supabase project, a Groq API key, and optionally a Redis URL
+
+### 1. Provision services
+
+**Supabase** — create a project at [supabase.com](https://supabase.com), then in
+the SQL Editor run the migrations in `db/` in filename order.
+
+Collect four values:
+
+| Value             | Where to find it                                 |
+| ----------------- | ------------------------------------------------ |
+| Project URL       | Settings → API                                   |
+| `anon` public key | Settings → API                                   |
+| JWT secret        | Settings → API → JWT Settings                    |
+| Connection string | Settings → Database (use the Session pooler URI) |
+
+Under Database → Replication, confirm `room_messages` and `documents` appear in
+the `supabase_realtime` publication. The migrations add them, but this is what
+makes live sync work, so it is worth a glance.
+
+**Groq** — create a key at
+[console.groq.com/keys](https://console.groq.com/keys). Groq's catalog changes
+over time; confirm your chosen model is currently served:
+
+```bash
+curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
+```
+
+**Redis (optional)** — any Redis instance, or a free database at
+[upstash.com](https://upstash.com). Leave `REDIS_URL` blank to run without
+caching; nothing else depends on it.
+
+### 2. Backend
 
 ```bash
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env             # then fill in the values from step 1
+cp .env.example .env             # fill in the values from step 1
 uvicorn main:app --reload --port 8000
 ```
 
-Check it's up: `curl http://localhost:8000/health` → `{"status":"ok"}`.
+Verify with `curl http://localhost:8000/health` → `{"status":"ok"}`.
 
-## 3. Frontend setup
+On first start the backend downloads the embedding model (~90 MB, cached
+afterward) and loads it before accepting traffic, so startup takes a few
+seconds. This is deliberate: loading it lazily on the first upload stalls
+concurrent requests.
+
+### 3. Frontend
 
 ```bash
 cd frontend
 npm install
-cp .env.local.example .env.local  # fill in Supabase URL + anon key
+cp .env.local.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) — sign up, then chat.
+Open [http://localhost:3000](http://localhost:3000) and sign up.
 
-## Project layout
+---
 
-```
-backend/
-  main.py              FastAPI app, CORS, startup/shutdown
-  app/auth.py           Verifies Supabase JWTs
-  app/db.py              Postgres connection pool (asyncpg)
-  app/llm.py              Groq streaming client
-  app/routers/conversations.py
-  app/routers/chat.py       Streams model output, persists messages
-  app/routers/rooms.py       Rooms, join codes, group messages, @ai trigger
-  app/routers/documents.py    Upload, list, delete documents
-  app/routers/memories.py      Memory CRUD (list/add/edit/delete)
-  app/embeddings.py         Local sentence-transformers embedding model
-  app/chunking.py            Overlapping text chunker
-  app/extract.py              Text extraction (txt/md/pdf)
-  app/retrieval.py            Vector similarity search (pgvector) + Redis caching
-  app/cache.py                 Optional Redis caching helper (Upstash free tier)
-  app/memory.py                 Background fact extraction for long-term memory
-  app/tools.py                   Calculator + clock, exposed to the model as tools
-  app/logging_config.py            Structured stdout logging setup
-  app/middleware.py                 Request logging + security headers
-  app/ratelimit.py                   In-memory per-user rate limiter
-db/schema.sql          Phase 1 tables + RLS policies
-db/phase2_schema.sql    Rooms, membership, room messages + Realtime publication
-db/phase3_schema.sql    Documents, chunks, vector index + RLS
-db/phase4_schema.sql    Citation storage, room roles + owner-only RLS
-db/phase5_schema.sql    Realtime on documents (live upload-status updates)
-db/phase6_schema.sql    Long-term memory table + RLS
-frontend/
-  app/page.tsx           Sign in / sign up
-  app/chat/page.tsx        Personal conversation list + streaming chat UI
-  app/rooms/page.tsx        Create/join rooms
-  app/rooms/[roomId]/page.tsx   Group chat, live sync, presence, roles/permissions
-  components/DocumentsPanel.tsx  Upload/list/delete docs, live status updates
-  components/SourcesList.tsx      Collapsible citation viewer
-  components/MemoryPanel.tsx       View/add/edit/delete remembered facts
-  lib/supabase.ts        Browser Supabase client
-  lib/api.ts               Typed calls to the FastAPI backend
-render.yaml             Optional Render Blueprint for one-step backend deploy
+## Configuration
 
-## Roadmap (from the system design doc)
+### Backend (`backend/.env`)
 
-| Phase | Focus |
-|---|---|
-| 1 ✅ | Foundation — auth, personal chat, persistence |
-| 2 ✅ | Group rooms, invites, realtime sync, presence |
-| 3 ✅ | Document upload + RAG (pgvector retrieval) |
-| 4 ✅ | Citations, abstention, source viewer, permissions |
-| 5 ✅ | Redis caching, parallel retrieval, background workers |
-| 6 ✅ | Memory, tool calling |
-| 7 ✅ | Observability, rate limits, security hardening, deployment |
+| Variable                             | Required | Description                                        |
+| ------------------------------------ | -------- | -------------------------------------------------- |
+| `SUPABASE_URL`                       | yes      | Project URL                                        |
+| `SUPABASE_ANON_KEY`                  | yes      | Sent as the `apikey` header when fetching the JWKS |
+| `DATABASE_URL`                       | yes      | Postgres connection string (Session pooler)        |
+| `GROQ_API_KEY`                       | yes      | Groq API key                                       |
+| `SUPABASE_JWT_SECRET`                | no       | Legacy HS256 fallback for older projects           |
+| `GROQ_MODEL`                         | no       | Default `openai/gpt-oss-120b`                      |
+| `REDIS_URL`                          | no       | Enables retrieval caching when set                 |
+| `FRONTEND_ORIGIN`                    | no       | Single allowed CORS origin                         |
+| `FRONTEND_ORIGINS`                   | no       | Comma-separated origins; takes priority            |
+| `LOG_LEVEL`                          | no       | `DEBUG`, `INFO`, `WARNING`, `ERROR`                |
+| `CHAT_RATE_LIMIT_PER_MINUTE`         | no       | Default 20                                         |
+| `ROOM_MESSAGE_RATE_LIMIT_PER_MINUTE` | no       | Default 30                                         |
+| `UPLOAD_RATE_LIMIT_PER_MINUTE`       | no       | Default 10                                         |
 
-Multi-agent workflows (mentioned as optional alongside Phase 6 in the
-original plan) were intentionally skipped.
+### Frontend (`frontend/.env.local`)
+
+| Variable                        | Description       |
+| ------------------------------- | ----------------- |
+| `NEXT_PUBLIC_SUPABASE_URL`      | Project URL       |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `anon` public key |
+| `NEXT_PUBLIC_API_URL`           | Backend base URL  |
+
+---
+
+## API
+
+All routes require `Authorization: Bearer <supabase-jwt>`.
+
+| Method   | Path                               | Description                                     |
+| -------- | ---------------------------------- | ----------------------------------------------- |
+| `GET`    | `/health`                          | Liveness check (unauthenticated)                |
+| `GET`    | `/api/conversations`               | List your conversations                         |
+| `POST`   | `/api/conversations`               | Create a conversation                           |
+| `GET`    | `/api/conversations/{id}/messages` | Message history with citations                  |
+| `POST`   | `/api/chat`                        | Send a message; streams the reply as plain text |
+| `GET`    | `/api/rooms`                       | List rooms you belong to                        |
+| `POST`   | `/api/rooms`                       | Create a room                                   |
+| `POST`   | `/api/rooms/join`                  | Join by code                                    |
+| `PATCH`  | `/api/rooms/{id}`                  | Rename (owner only)                             |
+| `DELETE` | `/api/rooms/{id}`                  | Delete (owner only)                             |
+| `GET`    | `/api/rooms/{id}/members`          | List members                                    |
+| `DELETE` | `/api/rooms/{id}/members/{uid}`    | Leave, or remove a member (owner)               |
+| `GET`    | `/api/rooms/{id}/messages`         | Room history                                    |
+| `POST`   | `/api/rooms/{id}/messages`         | Post a message; `@ai` triggers a reply          |
+| `GET`    | `/api/documents`                   | List documents (`?room_id=` for a room)         |
+| `POST`   | `/api/documents/upload`            | Upload and index a file                         |
+| `DELETE` | `/api/documents/{id}`              | Delete a document and its chunks                |
+| `GET`    | `/api/memories`                    | List remembered facts                           |
+| `POST`   | `/api/memories`                    | Add a fact                                      |
+| `PATCH`  | `/api/memories/{id}`               | Edit a fact                                     |
+| `DELETE` | `/api/memories/{id}`               | Delete a fact                                   |
+
+Interactive docs are available at `/docs` while the backend is running.
+
+---
+
+## Operations
+
+**Logging.** Every request emits one structured line with method, path, status,
+duration, and a request id echoed back as `X-Request-ID`. Unhandled errors are
+logged with a full traceback server-side; clients receive only a generic 500.
+
+**Rate limiting.** Per-user sliding-window limits on chat messages, room
+messages, and uploads. In-memory, so limits reset on restart and apply per
+instance — appropriate for a single-instance deployment.
+
+**Security headers.** `X-Frame-Options`, `X-Content-Type-Options`,
+`Referrer-Policy`, and `Permissions-Policy` are set on both frontend and
+backend responses. CORS is restricted to explicit methods and headers rather
+than wildcards.
+
+**Fail-fast startup.** Missing required environment variables raise a clear
+error at boot rather than a confusing failure mid-request.
+
+---
 
 ## Deployment
 
-Backend → **Render** (free web service), frontend → **Vercel** (free).
-Supabase, Groq, and Upstash stay exactly as they are — only the two apps
-move off your machine.
+Backend to [Render](https://render.com), frontend to
+[Vercel](https://vercel.com). Supabase, Groq, and Redis are unchanged.
 
-### Backend on Render
+### Backend
 
-**Option A — Blueprint (uses `render.yaml` at the repo root):**
-1. Push this repo to GitHub (or GitLab/Bitbucket).
-2. [dashboard.render.com](https://dashboard.render.com) → **New** → **Blueprint** → pick the repo.
-3. Render reads `render.yaml` and proposes a `collab-ai-backend` web service.
-   Fill in the env vars marked "from your `.env`" in the dashboard (Render
-   won't read secrets out of the YAML file): `SUPABASE_URL`,
-   `SUPABASE_JWT_SECRET`, `DATABASE_URL`, `GROQ_API_KEY`, and optionally
-   `REDIS_URL`. Leave `FRONTEND_ORIGINS` blank for now — you'll fill it in
-   after the frontend is deployed (step below).
-4. Deploy. Once live, note the service URL (something like
-   `https://collab-ai-backend.onrender.com`).
+Either point Render at the repo as a Blueprint (it reads `render.yaml`), or
+create a Web Service manually with root directory `backend`, build command
+`pip install -r requirements.txt`, start command
+`uvicorn main:app --host 0.0.0.0 --port $PORT`, and health check path `/health`.
 
-**Option B — Manual (no blueprint):**
-1. [dashboard.render.com](https://dashboard.render.com) → **New** → **Web Service** → connect the repo.
-2. **Root Directory**: `backend`. **Runtime**: Python 3. **Build Command**:
-   `pip install -r requirements.txt`. **Start Command**:
-   `uvicorn main:app --host 0.0.0.0 --port $PORT`. **Plan**: Free.
-3. **Health Check Path**: `/health`.
-4. Add the same environment variables listed in step 3 above.
-5. Deploy, note the service URL.
+Set every required variable from the configuration table. Leave
+`FRONTEND_ORIGINS` empty until the frontend is deployed.
 
-> Free-tier Render web services spin down after ~15 minutes idle and take
-> up to ~50s to wake on the next request — expected, not a bug.
+> Free-tier Render services sleep after ~15 minutes idle and take up to ~50
+> seconds to wake. Startup also loads the embedding model, so the first request
+> after a cold start is slow by design.
 
-### Frontend on Vercel
+### Frontend
 
-1. [vercel.com](https://vercel.com) → **Add New** → **Project** → import the same repo.
-2. **Root Directory**: `frontend` (Vercel auto-detects Next.js from there).
-3. Add environment variables: `NEXT_PUBLIC_SUPABASE_URL`,
-   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (same values as your local
-   `.env.local`), and `NEXT_PUBLIC_API_URL` = your Render backend URL from
-   above (e.g. `https://collab-ai-backend.onrender.com`).
-4. Deploy, note the resulting domain (e.g. `https://your-app.vercel.app`).
+Import the repo on Vercel with root directory `frontend`. Add the three
+`NEXT_PUBLIC_*` variables, pointing `NEXT_PUBLIC_API_URL` at the Render URL.
 
-### Wire the two together
+### Connect the two
 
-1. Back in Render, set the backend's `FRONTEND_ORIGINS` env var to your
-   Vercel domain (e.g. `https://your-app.vercel.app`) and redeploy —
-   without this, the browser's CORS check will block every API call.
-2. Supabase dashboard → **Authentication → URL Configuration**: set **Site
-   URL** to your Vercel domain, and add it under **Redirect URLs** too —
-   otherwise sign-up/sign-in email links will point back to `localhost`.
-3. Open your Vercel domain and sign up again (Supabase Auth users aren't
-   shared across environments unless you're pointed at the same Supabase
-   project, which you are here — so your local-dev account should already
-   work).
+1. Set the backend's `FRONTEND_ORIGINS` to your Vercel domain and redeploy.
+   Without this, CORS blocks every API call.
+2. In Supabase → Authentication → URL Configuration, set the Site URL to your
+   Vercel domain and add it under Redirect URLs, so auth emails do not point at
+   `localhost`.
+
+---
+
+## Project structure
+
 ```
+backend/
+  main.py                     App setup, CORS, lifespan, error handling
+  app/
+    auth.py                   Supabase JWT verification
+    db.py                     Postgres pool, pgvector and jsonb codecs
+    llm.py                    Groq client, prompts, streaming, tool calls
+    retrieval.py              Vector search and caching
+    embeddings.py             Local sentence-transformers model
+    chunking.py               Overlapping text splitter
+    extract.py                Text extraction (txt/md/pdf)
+    memory.py                 Background fact extraction
+    tools.py                  Calculator and clock
+    cache.py                  Optional Redis helper
+    ratelimit.py              Per-user sliding-window limiter
+    middleware.py             Request logging, security headers
+    logging_config.py         Structured stdout logging
+    routers/                  conversations, chat, rooms, documents, memories
+db/                           SQL migrations, run in filename order
+frontend/
+  app/
+    page.tsx                  Sign in and sign up
+    chat/page.tsx             Conversation list and streaming chat
+    rooms/page.tsx            Create and join rooms
+    rooms/[roomId]/page.tsx   Group chat, presence, permissions
+  components/
+    DocumentsPanel.tsx        Upload, list, delete; live status
+    SourcesList.tsx           Collapsible citation viewer
+    MemoryPanel.tsx           View and edit remembered facts
+  lib/
+    supabase.ts               Browser Supabase client
+    api.ts                    Typed backend client
+render.yaml                   Render Blueprint
+```
+
+---
+
+## Troubleshooting
+
+**Backend exits at startup.** A required environment variable is missing; the
+error names it.
+
+**Every API call fails with a CORS error.** `FRONTEND_ORIGINS` does not include
+the origin the browser is loading from.
+
+**Chat fails with a bare `network error`.** The streaming response sends its
+`200` header before the model is called, so a mid-stream failure closes the
+socket without a status. The real cause is in the backend log — most often a
+model id that Groq has retired.
+
+**Uploads stay on `processing`.** The background indexing task failed. Check
+the log for `document_processing_failed`.
+
+**The assistant says it cannot find something that is in a document.** Check
+that the document indexed into a sensible number of chunks:
+
+```sql
+select d.filename, d.status, d.char_count, count(dc.id) as chunks
+from documents d
+left join document_chunks dc on dc.document_id = d.id
+group by d.id, d.filename, d.status, d.char_count;
+```
+
+A few thousand characters should yield single-digit chunks. If the count is in
+the hundreds, the document was indexed before a chunker fix — delete and
+re-upload it. If chunking looks right, the similarity threshold
+(`MAX_DISTANCE` in `retrieval.py`) may be too strict.
+
+**Duplicate requests in development.** React Strict Mode mounts effects twice.
+This does not happen in production builds.
