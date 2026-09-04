@@ -42,10 +42,13 @@ export default function RoomChatPage() {
   }
 
   useEffect(() => {
+    let cancelled = false;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
     (async () => {
       const { data: sessionData } = await supabase.auth.getSession();
+      if (cancelled) return;
+
       if (!sessionData.session) {
         router.replace("/");
         return;
@@ -59,6 +62,8 @@ export default function RoomChatPage() {
         getRoomMembers(roomId),
         getRoomMessages(roomId),
       ]);
+      if (cancelled) return;
+
       const found = rooms.find((r) => r.id === roomId) ?? null;
       setRoom(found);
       setNameDraft(found?.name ?? "");
@@ -66,9 +71,11 @@ export default function RoomChatPage() {
       setMessages(messageList);
       setReady(true);
 
-      // One Realtime channel per room: live-inserted messages + presence.
-      channel = supabase
-        .channel(`room:${roomId}`, {
+      // Unique per mount: supabase.channel() returns the EXISTING channel for
+      // a repeated topic, and postgres_changes handlers can't be attached
+      // after subscribe(). StrictMode mounts effects twice.
+      const ch = supabase
+        .channel(`room:${roomId}:${crypto.randomUUID()}`, {
           config: { presence: { key: myId.current! } },
         })
         .on(
@@ -94,17 +101,24 @@ export default function RoomChatPage() {
           }
         )
         .on("presence", { event: "sync" }, () => {
-          const state = channel!.presenceState();
-          setOnlineIds(new Set(Object.keys(state)));
-        })
-        .subscribe(async (status) => {
-          if (status === "SUBSCRIBED") {
-            await channel!.track({ display_name: myName });
-          }
+          setOnlineIds(new Set(Object.keys(ch.presenceState())));
         });
+
+      if (cancelled) {
+        supabase.removeChannel(ch);
+        return;
+      }
+      
+      channel = ch;
+      ch.subscribe(async (status) => {
+        if (status === "SUBSCRIBED") {
+          await ch.track({ display_name: myName });
+        }
+      });
     })();
 
     return () => {
+      cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

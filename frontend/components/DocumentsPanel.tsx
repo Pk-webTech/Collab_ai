@@ -18,7 +18,7 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
   // from "processing" to "ready" (or "failed") on screen the moment the
   // backend's background task finishes -- no polling, no manual refresh.
   // Works for uploads from other room members too.
-      useEffect(() => {
+  useEffect(() => {
     let cancelled = false;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
@@ -96,7 +96,11 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
       // row starts out "processing" and the Realtime subscription above
       // flips it to "ready" a moment later once chunking/embedding finishes.
       const doc = await uploadDocument(file, roomId);
-      setDocs((prev) => [doc, ...prev]);
+      setDocs((prev) =>
+        prev.some((d) => d.id === doc.id)
+          ? prev.map((d) => (d.id === doc.id ? doc : d))
+          : [doc, ...prev]
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {

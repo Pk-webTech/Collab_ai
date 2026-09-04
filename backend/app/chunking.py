@@ -2,12 +2,26 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list[st
     """
     Splits text into overlapping character-based chunks, breaking on
     paragraph/sentence boundaries where possible so chunks read naturally.
-    Good enough for Phase 3; can be swapped for a token-aware splitter later
-    without touching anything downstream (chunks are just stored strings).
+
+    The separator search is deliberately restricted to the tail of each
+    window. `rfind` returns the LAST separator in the window, but if the
+    only separator sits near the window's start -- e.g. a PDF with a short
+    header followed by one long unbroken block -- the break point lands
+    behind where the previous chunk ended. `end` then collapses backwards,
+    `start` advances by a single character, and the splitter emits hundreds
+    of near-identical chunks sliding one character at a time. Requiring the
+    break to fall past `min_break` keeps every chunk close to `chunk_size`,
+    and the `min_start` floor guarantees forward progress even if a future
+    edit reintroduces a bad break point.
     """
     text = text.strip()
     if not text:
         return []
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    # Overlap must leave room to advance, or the loop cannot terminate.
+    overlap = max(0, min(overlap, chunk_size // 2))
 
     chunks: list[str] = []
     start = 0
@@ -17,14 +31,13 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list[st
         end = min(start + chunk_size, n)
 
         if end < n:
-            # Prefer breaking at a paragraph, then sentence, then word boundary.
-            break_at = text.rfind("\n\n", start, end)
-            if break_at == -1 or break_at <= start:
-                break_at = text.rfind(". ", start, end)
-            if break_at == -1 or break_at <= start:
-                break_at = text.rfind(" ", start, end)
-            if break_at != -1 and break_at > start:
-                end = break_at + 1
+            # Only accept a break in the last 40% of the window.
+            min_break = start + int(chunk_size * 0.6)
+            for separator in ("\n\n", ". ", "\n", " "):
+                break_at = text.rfind(separator, min_break, end)
+                if break_at != -1:
+                    end = break_at + len(separator)
+                    break
 
         chunk = text[start:end].strip()
         if chunk:
@@ -32,6 +45,9 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list[st
 
         if end >= n:
             break
-        start = max(end - overlap, start + 1)
+
+        # Never move backwards, and always advance by at least one character.
+        min_start = start + chunk_size - overlap
+        start = max(end - overlap, min_start, start + 1)
 
     return chunks

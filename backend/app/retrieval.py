@@ -4,10 +4,8 @@ from .embeddings import embed_query as _embed_query_sync
 from . import cache
 import asyncio
 
-TOP_K = 5
-# Chunks with a cosine distance above this are considered too weak a match
-# to be worth including as context (distance 0 = identical, 2 = opposite).
-MAX_DISTANCE = 0.6
+MAX_DISTANCE = 1.0
+TOP_K = 8
 
 # How long a (scope, query) retrieval result stays cached. Short enough that
 # a newly uploaded document shows up in search within a few minutes without
