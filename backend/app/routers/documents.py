@@ -8,11 +8,14 @@ from ..db import get_pool
 from ..extract import extract_text, UnsupportedFileType
 from ..chunking import chunk_text
 from ..embeddings import embed_texts
+from ..ratelimit import check_rate_limit
 import asyncio
+import os
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB -- generous for free-tier Postgres storage
+UPLOAD_RATE_LIMIT = int(os.environ.get("UPLOAD_RATE_LIMIT_PER_MINUTE", "10"))
 
 
 class DocumentOut(BaseModel):
@@ -95,6 +98,7 @@ async def upload_document(
     user: CurrentUser = Depends(get_current_user),
 ):
     pool = get_pool()
+    check_rate_limit(f"upload:{user.id}", UPLOAD_RATE_LIMIT, 60)
     if room_id is not None:
         await _assert_room_member(pool, room_id, user.id)
 

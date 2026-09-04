@@ -3,17 +3,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from uuid import UUID
 import asyncio
+import os
 
 from ..auth import get_current_user, CurrentUser
 from ..db import get_pool
 from ..llm import stream_chat_completion
 from ..retrieval import retrieve_context
 from ..memory import extract_and_store_memory
+from ..ratelimit import check_rate_limit
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 HISTORY_LIMIT = 20  # last N messages sent to the model as context
 MEMORY_LIMIT = 20  # most recent remembered facts to include in the prompt
+CHAT_RATE_LIMIT = int(os.environ.get("CHAT_RATE_LIMIT_PER_MINUTE", "20"))
 
 
 class ChatIn(BaseModel):
@@ -34,6 +37,7 @@ async def send_message(
     user: CurrentUser = Depends(get_current_user),
 ):
     pool = get_pool()
+    check_rate_limit(f"chat:{user.id}", CHAT_RATE_LIMIT, 60)
 
     owner = await _load_conversation_owner(pool, body.conversation_id)
     if owner is None:

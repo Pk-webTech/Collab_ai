@@ -83,8 +83,28 @@ locally for now.
   time is it in UTC?"), in both personal chat and `@ai` room replies. Both
   tools run locally — no external API, no extra cost.
 
-Not yet built (later phases): multi-agent workflows, observability, rate
-limits, security hardening, deployment.
+**Phase 7 — Observability, Rate Limits, Security & Deployment**
+
+- **Observability**: every request logs one structured line (method, path,
+  status, duration, a short request id echoed back as `X-Request-ID`), and
+  unhandled errors are logged with a full traceback server-side while the
+  client only ever sees a generic `500`. Control verbosity with `LOG_LEVEL`.
+- **Rate limits**: per-user limits on chat messages, room messages, and
+  uploads (defaults: 20/30/10 per minute — tune via env vars), so one
+  runaway client can't blow through your free-tier Groq/Supabase quota.
+  In-memory, so it resets on restart and only applies per-instance —
+  correct for Render's free single-instance plan.
+- **Security hardening**: defensive response headers on both frontend and
+  backend (`X-Frame-Options`, `X-Content-Type-Options`, etc.), CORS locked
+  to specific methods/headers instead of a wildcard, startup fails fast
+  with a clear message if a required env var is missing instead of
+  crashing confusingly mid-request, and unhandled exceptions never leak
+  internals (stack traces, DB errors) to the client.
+- **Deployment**: backend → Render (free web service), frontend → Vercel
+  (free). See the **Deployment** section below for exact steps.
+
+This covers everything in the roadmap except multi-agent workflows, which
+the plan marked optional and this build skips.
 
 ## 1. Create free accounts (5 min)
 
@@ -92,6 +112,7 @@ limits, security hardening, deployment.
    - In the SQL Editor, paste and run `db/schema.sql`, then
      `db/phase2_schema.sql`, then `db/phase3_schema.sql`, then
      `db/phase4_schema.sql`, then `db/phase5_schema.sql`, then `db/phase6_schema.sql`.
+     (Phase 7 adds no new SQL.)
    - Database → Replication: confirm `room_messages` is listed under the
      `supabase_realtime` publication (the schema script adds it, but it's
      worth a glance — this is what makes group chat update live).
@@ -155,6 +176,9 @@ backend/
   app/cache.py                 Optional Redis caching helper (Upstash free tier)
   app/memory.py                 Background fact extraction for long-term memory
   app/tools.py                   Calculator + clock, exposed to the model as tools
+  app/logging_config.py            Structured stdout logging setup
+  app/middleware.py                 Request logging + security headers
+  app/ratelimit.py                   In-memory per-user rate limiter
 db/schema.sql          Phase 1 tables + RLS policies
 db/phase2_schema.sql    Rooms, membership, room messages + Realtime publication
 db/phase3_schema.sql    Documents, chunks, vector index + RLS
@@ -171,20 +195,75 @@ frontend/
   components/MemoryPanel.tsx       View/add/edit/delete remembered facts
   lib/supabase.ts        Browser Supabase client
   lib/api.ts               Typed calls to the FastAPI backend
-```
+render.yaml             Optional Render Blueprint for one-step backend deploy
 
 ## Roadmap (from the system design doc)
 
-| Phase | Focus                                                      |
-| ----- | ---------------------------------------------------------- |
-| 1 ✅  | Foundation — auth, personal chat, persistence              |
-| 2 ✅  | Group rooms, invites, realtime sync, presence              |
-| 3 ✅  | Document upload + RAG (pgvector retrieval)                 |
-| 4 ✅  | Citations, abstention, source viewer, permissions          |
-| 5 ✅  | Redis caching, parallel retrieval, background workers      |
-| 6 ✅  | Memory, tool calling                                       |
-| 7     | Observability, rate limits, security hardening, deployment |
+| Phase | Focus |
+|---|---|
+| 1 ✅ | Foundation — auth, personal chat, persistence |
+| 2 ✅ | Group rooms, invites, realtime sync, presence |
+| 3 ✅ | Document upload + RAG (pgvector retrieval) |
+| 4 ✅ | Citations, abstention, source viewer, permissions |
+| 5 ✅ | Redis caching, parallel retrieval, background workers |
+| 6 ✅ | Memory, tool calling |
+| 7 ✅ | Observability, rate limits, security hardening, deployment |
 
-Free-tier services planned for later phases: Supabase Storage (raw file
-retention, if you want it beyond extracted text), Vercel + Render free tiers
-(Phase 7, when you're ready to deploy).
+Multi-agent workflows (mentioned as optional alongside Phase 6 in the
+original plan) were intentionally skipped.
+
+## Deployment
+
+Backend → **Render** (free web service), frontend → **Vercel** (free).
+Supabase, Groq, and Upstash stay exactly as they are — only the two apps
+move off your machine.
+
+### Backend on Render
+
+**Option A — Blueprint (uses `render.yaml` at the repo root):**
+1. Push this repo to GitHub (or GitLab/Bitbucket).
+2. [dashboard.render.com](https://dashboard.render.com) → **New** → **Blueprint** → pick the repo.
+3. Render reads `render.yaml` and proposes a `collab-ai-backend` web service.
+   Fill in the env vars marked "from your `.env`" in the dashboard (Render
+   won't read secrets out of the YAML file): `SUPABASE_URL`,
+   `SUPABASE_JWT_SECRET`, `DATABASE_URL`, `GROQ_API_KEY`, and optionally
+   `REDIS_URL`. Leave `FRONTEND_ORIGINS` blank for now — you'll fill it in
+   after the frontend is deployed (step below).
+4. Deploy. Once live, note the service URL (something like
+   `https://collab-ai-backend.onrender.com`).
+
+**Option B — Manual (no blueprint):**
+1. [dashboard.render.com](https://dashboard.render.com) → **New** → **Web Service** → connect the repo.
+2. **Root Directory**: `backend`. **Runtime**: Python 3. **Build Command**:
+   `pip install -r requirements.txt`. **Start Command**:
+   `uvicorn main:app --host 0.0.0.0 --port $PORT`. **Plan**: Free.
+3. **Health Check Path**: `/health`.
+4. Add the same environment variables listed in step 3 above.
+5. Deploy, note the service URL.
+
+> Free-tier Render web services spin down after ~15 minutes idle and take
+> up to ~50s to wake on the next request — expected, not a bug.
+
+### Frontend on Vercel
+
+1. [vercel.com](https://vercel.com) → **Add New** → **Project** → import the same repo.
+2. **Root Directory**: `frontend` (Vercel auto-detects Next.js from there).
+3. Add environment variables: `NEXT_PUBLIC_SUPABASE_URL`,
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (same values as your local
+   `.env.local`), and `NEXT_PUBLIC_API_URL` = your Render backend URL from
+   above (e.g. `https://collab-ai-backend.onrender.com`).
+4. Deploy, note the resulting domain (e.g. `https://your-app.vercel.app`).
+
+### Wire the two together
+
+1. Back in Render, set the backend's `FRONTEND_ORIGINS` env var to your
+   Vercel domain (e.g. `https://your-app.vercel.app`) and redeploy —
+   without this, the browser's CORS check will block every API call.
+2. Supabase dashboard → **Authentication → URL Configuration**: set **Site
+   URL** to your Vercel domain, and add it under **Redirect URLs** too —
+   otherwise sign-up/sign-in email links will point back to `localhost`.
+3. Open your Vercel domain and sign up again (Supabase Auth users aren't
+   shared across environments unless you're pointed at the same Supabase
+   project, which you are here — so your local-dev account should already
+   work).
+```

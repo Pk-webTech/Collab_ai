@@ -1,0 +1,40 @@
+# Render Blueprint for the backend. Optional -- you can also create a Web
+# Service manually in the Render dashboard (see README's Deployment
+# section) and skip this file entirely; both end up in the same place.
+#
+# To use it: Render dashboard -> New -> Blueprint -> point at this repo.
+# Render will read this file and propose the service below. Any env var
+# marked `sync: false` needs its value filled in by hand in the dashboard
+# (Render won't read secrets out of this file).
+services:
+  - type: web
+    name: collab-ai-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: REDIS_URL
+        sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: CHAT_RATE_LIMIT_PER_MINUTE
+        value: "20"
+      - key: ROOM_MESSAGE_RATE_LIMIT_PER_MINUTE
+        value: "30"
+      - key: UPLOAD_RATE_LIMIT_PER_MINUTE
+        value: "10"

@@ -2,6 +2,7 @@ import secrets
 import string
 from uuid import UUID
 import asyncio
+import os
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -10,11 +11,13 @@ from ..auth import get_current_user, CurrentUser
 from ..db import get_pool
 from ..llm import stream_chat_completion
 from ..retrieval import retrieve_context
+from ..ratelimit import check_rate_limit
 
 router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 
 AI_TRIGGER = "@ai"
 HISTORY_LIMIT = 20
+ROOM_MESSAGE_RATE_LIMIT = int(os.environ.get("ROOM_MESSAGE_RATE_LIMIT_PER_MINUTE", "30"))
 
 
 def _generate_join_code() -> str:
@@ -236,6 +239,7 @@ async def send_room_message(
     whole room in real time.
     """
     pool = get_pool()
+    check_rate_limit(f"room_message:{user.id}", ROOM_MESSAGE_RATE_LIMIT, 60)
     await _assert_member(pool, room_id, user.id)
 
     row = await pool.fetchrow(
