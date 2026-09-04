@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,11 +9,14 @@ from ..db import get_pool
 
 router = APIRouter(prefix="/api/memories", tags=["memories"])
 
+MAX_MEMORY_CHARS = 500
 
+
+# `created_at` must be `datetime` -- see the note in conversations.py.
 class MemoryOut(BaseModel):
     id: UUID
     content: str
-    created_at: str
+    created_at: datetime
 
 
 class CreateMemoryIn(BaseModel):
@@ -21,6 +25,15 @@ class CreateMemoryIn(BaseModel):
 
 class UpdateMemoryIn(BaseModel):
     content: str
+
+
+def _clean(content: str) -> str:
+    content = content.strip()
+    if not content:
+        raise HTTPException(400, "Memory can't be empty")
+    if len(content) > MAX_MEMORY_CHARS:
+        raise HTTPException(400, f"Memory is too long (max {MAX_MEMORY_CHARS} characters)")
+    return content
 
 
 @router.get("", response_model=list[MemoryOut])
@@ -35,9 +48,7 @@ async def list_memories(user: CurrentUser = Depends(get_current_user)):
 
 @router.post("", response_model=MemoryOut)
 async def create_memory(body: CreateMemoryIn, user: CurrentUser = Depends(get_current_user)):
-    content = body.content.strip()
-    if not content:
-        raise HTTPException(400, "Memory can't be empty")
+    content = _clean(body.content)
     pool = get_pool()
     row = await pool.fetchrow(
         "insert into user_memories (owner_id, content) values ($1, $2) returning id, content, created_at",
@@ -59,9 +70,7 @@ async def _assert_own_memory(pool, memory_id: UUID, user_id: str):
 async def update_memory(
     memory_id: UUID, body: UpdateMemoryIn, user: CurrentUser = Depends(get_current_user)
 ):
-    content = body.content.strip()
-    if not content:
-        raise HTTPException(400, "Memory can't be empty")
+    content = _clean(body.content)
     pool = get_pool()
     await _assert_own_memory(pool, memory_id, user.id)
     row = await pool.fetchrow(

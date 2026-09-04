@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -39,6 +40,11 @@ def _validate_env() -> None:
 async def lifespan(app: FastAPI):
     _validate_env()
     await init_pool()
+    # Warm the embedding model before serving traffic. Importing torch holds
+    # the GIL for several seconds even from a worker thread, which stalls
+    # every concurrent request if it happens on the first upload instead.
+    from app.embeddings import _get_model
+    await asyncio.to_thread(_get_model)
     logger.info("startup_complete")
     yield
     await cache.close()

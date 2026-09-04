@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File, Form
@@ -15,6 +16,7 @@ import os
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5MB -- generous for free-tier Postgres storage
+READ_CHUNK_BYTES = 64 * 1024
 UPLOAD_RATE_LIMIT = int(os.environ.get("UPLOAD_RATE_LIMIT_PER_MINUTE", "10"))
 
 
@@ -23,7 +25,13 @@ class DocumentOut(BaseModel):
     filename: str
     char_count: int
     status: str
-    created_at: str
+    # MUST be `datetime`, not `str`. asyncpg returns timestamptz columns as
+    # datetime objects and pydantic v2 will not coerce datetime -> str, so
+    # `str` here raised ResponseValidationError and returned a 500 on every
+    # upload and every document list. FastAPI serialises datetime to an
+    # ISO-8601 string, which is what the frontend's `created_at: string`
+    # type already expects.
+    created_at: datetime
 
 
 async def _assert_room_member(pool, room_id: UUID, user_id: str):
@@ -49,7 +57,8 @@ async def _process_document(document_id: UUID, text: str):
         if chunks:
             vectors = await asyncio.to_thread(embed_texts, chunks)
             rows_to_insert = [
-                (document_id, i, chunk, vector) for i, (chunk, vector) in enumerate(zip(chunks, vectors))
+                (document_id, i, chunk, vector)
+                for i, (chunk, vector) in enumerate(zip(chunks, vectors))
             ]
             await pool.executemany(
                 """
@@ -60,6 +69,13 @@ async def _process_document(document_id: UUID, text: str):
             )
         await pool.execute("update documents set status = 'ready' where id = $1", document_id)
     except Exception:
+        # Log rather than swallow silently -- a document stuck on 'failed'
+        # with no explanation anywhere is very hard to debug.
+        import logging
+
+        logging.getLogger("app.documents").exception(
+            "document_processing_failed document_id=%s", document_id
+        )
         await pool.execute("update documents set status = 'failed' where id = $1", document_id)
 
 
@@ -102,14 +118,30 @@ async def upload_document(
     if room_id is not None:
         await _assert_room_member(pool, room_id, user.id)
 
-    data = await file.read()
-    if len(data) > MAX_FILE_BYTES:
-        raise HTTPException(400, "File too large (5MB limit)")
+    if not file.filename:
+        raise HTTPException(400, "No filename on the uploaded file")
+
+    # Read incrementally and bail as soon as the limit is exceeded, rather
+    # than buffering the whole upload into memory before checking its size.
+    parts: list[bytes] = []
+    total = 0
+    while chunk := await file.read(READ_CHUNK_BYTES):
+        total += len(chunk)
+        if total > MAX_FILE_BYTES:
+            raise HTTPException(400, "File too large (5MB limit)")
+        parts.append(chunk)
+    data = b"".join(parts)
+
+    if not data:
+        raise HTTPException(400, "That file is empty")
 
     try:
         text = extract_text(file.filename, data)
     except UnsupportedFileType as e:
         raise HTTPException(400, str(e))
+    except Exception:
+        # A corrupt or password-protected PDF should be a 400, not a 500.
+        raise HTTPException(400, "Couldn't read that file -- it may be corrupt or protected")
 
     if not text.strip():
         raise HTTPException(400, "Couldn't extract any text from that file")

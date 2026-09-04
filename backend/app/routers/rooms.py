@@ -1,10 +1,12 @@
+import logging
 import secrets
 import string
+from datetime import datetime
 from uuid import UUID
 import asyncio
 import os
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..auth import get_current_user, CurrentUser
@@ -14,6 +16,8 @@ from ..retrieval import retrieve_context
 from ..ratelimit import check_rate_limit
 
 router = APIRouter(prefix="/api/rooms", tags=["rooms"])
+
+logger = logging.getLogger("app.rooms")
 
 AI_TRIGGER = "@ai"
 HISTORY_LIMIT = 20
@@ -25,12 +29,17 @@ def _generate_join_code() -> str:
     return "".join(secrets.choice(alphabet) for _ in range(6))
 
 
+# All timestamp fields below MUST be `datetime`, not `str`. asyncpg returns
+# timestamptz columns as datetime objects and pydantic v2 will not coerce
+# datetime -> str, so `str` raised ResponseValidationError and turned every
+# one of these endpoints into a 500. FastAPI serialises datetime to ISO-8601,
+# which is what the frontend's `created_at: string` types already expect.
 class RoomOut(BaseModel):
     id: UUID
     name: str
     owner_id: UUID
     join_code: str
-    created_at: str
+    created_at: datetime
 
 
 class CreateRoomIn(BaseModel):
@@ -49,7 +58,7 @@ class MemberOut(BaseModel):
     user_id: UUID
     display_name: str | None
     role: str
-    joined_at: str
+    joined_at: datetime
 
 
 class RoomMessageOut(BaseModel):
@@ -58,7 +67,7 @@ class RoomMessageOut(BaseModel):
     user_id: UUID | None
     display_name: str | None = None
     content: str
-    created_at: str
+    created_at: datetime
     sources: list[dict] | None = None
 
 
@@ -102,6 +111,10 @@ async def list_my_rooms(user: CurrentUser = Depends(get_current_user)):
 
 @router.post("", response_model=RoomOut)
 async def create_room(body: CreateRoomIn, user: CurrentUser = Depends(get_current_user)):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Room name can't be empty")
+
     pool = get_pool()
     for _ in range(5):
         code = _generate_join_code()
@@ -117,7 +130,7 @@ async def create_room(body: CreateRoomIn, user: CurrentUser = Depends(get_curren
         values ($1, $2, $3)
         returning id, name, owner_id, join_code, created_at
         """,
-        body.name,
+        name,
         user.id,
         code,
     )
@@ -128,6 +141,10 @@ async def create_room(body: CreateRoomIn, user: CurrentUser = Depends(get_curren
 async def rename_room(
     room_id: UUID, body: RenameRoomIn, user: CurrentUser = Depends(get_current_user)
 ):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Room name can't be empty")
+
     pool = get_pool()
     await _assert_owner(pool, room_id, user.id)
     row = await pool.fetchrow(
@@ -135,7 +152,7 @@ async def rename_room(
         update rooms set name = $1 where id = $2
         returning id, name, owner_id, join_code, created_at
         """,
-        body.name,
+        name,
         room_id,
     )
     return dict(row)
@@ -197,10 +214,17 @@ async def remove_or_leave(
     pool = get_pool()
     await _assert_member(pool, room_id, user.id)
 
+    owner_id = await pool.fetchval("select owner_id from rooms where id = $1", room_id)
     is_self = str(member_id) == user.id
-    if not is_self:
+
+    if is_self:
+        # Previously the owner could leave their own room. The room then had
+        # an owner_id pointing at a non-member: nobody could rename or delete
+        # it, and it vanished from everyone's room list.
+        if str(owner_id) == user.id:
+            raise HTTPException(400, "You own this room -- delete it instead of leaving")
+    else:
         await _assert_owner(pool, room_id, user.id)
-        owner_id = await pool.fetchval("select owner_id from rooms where id = $1", room_id)
         if str(owner_id) == str(member_id):
             raise HTTPException(400, "Owner can't be removed -- delete the room instead")
 
@@ -227,36 +251,16 @@ async def get_room_messages(room_id: UUID, user: CurrentUser = Depends(get_curre
     return [dict(r) for r in rows]
 
 
-@router.post("/{room_id}/messages", response_model=RoomMessageOut)
-async def send_room_message(
-    room_id: UUID, body: SendRoomMessageIn, user: CurrentUser = Depends(get_current_user)
-):
+async def _generate_ai_reply(room_id: UUID, user_id: str, prompt: str) -> None:
     """
-    Inserts the message; the frontend hears about it (for every member,
-    including the sender) via a Supabase Realtime subscription rather than
-    this response. If the message starts with "@ai", also generates and
-    persists an AI reply (with its citation sources) so it shows up for the
-    whole room in real time.
+    Runs after the POST response has been sent. The reply reaches every
+    client (including the sender) over Realtime, so nothing here needs to
+    be in the request body -- and keeping it out of the request means the
+    sender's HTTP call doesn't hang for the 10-30s the model takes.
+    Best-effort: a failure here must never surface as a failed send.
     """
-    pool = get_pool()
-    check_rate_limit(f"room_message:{user.id}", ROOM_MESSAGE_RATE_LIMIT, 60)
-    await _assert_member(pool, room_id, user.id)
-
-    row = await pool.fetchrow(
-        """
-        insert into room_messages (room_id, sender_type, user_id, content)
-        values ($1, 'user', $2, $3)
-        returning id, sender_type, user_id, content, created_at, sources
-        """,
-        room_id,
-        user.id,
-        body.content,
-    )
-    result = dict(row)
-    display_name = await pool.fetchval("select display_name from profiles where id = $1", user.id)
-    result["display_name"] = display_name
-
-    if body.content.strip().lower().startswith(AI_TRIGGER):
+    try:
+        pool = get_pool()
         history_rows, retrieval = await asyncio.gather(
             pool.fetch(
                 """
@@ -268,7 +272,7 @@ async def send_room_message(
                 room_id,
                 HISTORY_LIMIT,
             ),
-            retrieve_context(pool, owner_id=user.id, room_id=room_id, query=body.content),
+            retrieve_context(pool, owner_id=user_id, room_id=room_id, query=prompt),
         )
         history = [
             {"role": "assistant" if r["sender_type"] == "ai" else "user", "content": r["content"]}
@@ -289,7 +293,47 @@ async def send_room_message(
             ai_reply,
             retrieval.sources or None,
         )
-        # AI message delivery to all clients happens via Realtime, same as
-        # any user message -- nothing further to do here.
+    except Exception:
+        logger.exception("ai_reply_failed room_id=%s", room_id)
+
+
+@router.post("/{room_id}/messages", response_model=RoomMessageOut)
+async def send_room_message(
+    room_id: UUID,
+    body: SendRoomMessageIn,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Inserts the message; the frontend hears about it (for every member,
+    including the sender) via a Supabase Realtime subscription rather than
+    this response. If the message starts with "@ai", an assistant reply is
+    generated in the background and persisted, reaching the whole room the
+    same way any user message does.
+    """
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(400, "Message can't be empty")
+
+    pool = get_pool()
+    check_rate_limit(f"room_message:{user.id}", ROOM_MESSAGE_RATE_LIMIT, 60)
+    await _assert_member(pool, room_id, user.id)
+
+    row = await pool.fetchrow(
+        """
+        insert into room_messages (room_id, sender_type, user_id, content)
+        values ($1, 'user', $2, $3)
+        returning id, sender_type, user_id, content, created_at, sources
+        """,
+        room_id,
+        user.id,
+        content,
+    )
+    result = dict(row)
+    display_name = await pool.fetchval("select display_name from profiles where id = $1", user.id)
+    result["display_name"] = display_name
+
+    if content.lower().startswith(AI_TRIGGER):
+        background_tasks.add_task(_generate_ai_reply, room_id, user.id, content)
 
     return result

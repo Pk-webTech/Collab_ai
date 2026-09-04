@@ -24,11 +24,11 @@ async def init_pool():
     database_url = os.environ["DATABASE_URL"]
     _pool = await asyncpg.create_pool(
         dsn=database_url,
-        min_size=1,
-        max_size=5,
-        # Supabase's free-tier pooler is happier with statement caching off.
+        min_size=5,          # was 1 -- opens all connections at startup instead
+        max_size=5,          # of paying a TLS handshake mid-request
         statement_cache_size=0,
         init=_init_connection,
+        command_timeout=30,
     )
     return _pool
 

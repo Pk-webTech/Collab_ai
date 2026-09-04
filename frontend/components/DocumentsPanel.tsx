@@ -18,9 +18,8 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
   // from "processing" to "ready" (or "failed") on screen the moment the
   // backend's background task finishes -- no polling, no manual refresh.
   // Works for uploads from other room members too.
-  useEffect(() => {
-    refresh();
-
+      useEffect(() => {
+    let cancelled = false;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
     (async () => {
@@ -33,43 +32,55 @@ export default function DocumentsPanel({ roomId }: { roomId?: string }) {
         if (!uid) return;
         filter = `owner_id=eq.${uid}`;
       }
+      if (cancelled) return;
 
-      channel = supabase
-        .channel(`documents:${roomId ?? "personal"}`)
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "documents", filter },
-          (payload) => {
-            const row = (payload.new ?? payload.old) as any;
-            // The personal-scope filter is by owner_id only (Realtime can't
-            // filter on two columns at once), so drop the user's own room
-            // documents here -- they belong in that room's panel, not this one.
-            if (!roomId && row.room_id) return;
+      setDocs(await listDocuments(roomId));
+      if (cancelled) return;
 
-            if (payload.eventType === "DELETE") {
-              setDocs((prev) => prev.filter((d) => d.id !== row.id));
-              return;
-            }
+      // Unique topic per mount. supabase.channel() returns the EXISTING
+      // channel when the topic is already registered, and postgres_changes
+      // handlers cannot be attached after subscribe(). StrictMode mounts
+      // effects twice, so a fixed topic hits that on every dev render.
+      const topic = `documents:${roomId ?? "personal"}:${crypto.randomUUID()}`;
 
-            const updated: Document = {
-              id: row.id,
-              filename: row.filename,
-              char_count: row.char_count,
-              status: row.status,
-              created_at: row.created_at,
-            };
-            setDocs((prev) => {
-              const exists = prev.some((d) => d.id === updated.id);
-              return exists
-                ? prev.map((d) => (d.id === updated.id ? updated : d))
-                : [updated, ...prev];
-            });
+      const ch = supabase.channel(topic).on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "documents", filter },
+        (payload) => {
+          const row = (payload.new ?? payload.old) as any;
+          if (!roomId && row.room_id) return;
+
+          if (payload.eventType === "DELETE") {
+            setDocs((prev) => prev.filter((d) => d.id !== row.id));
+            return;
           }
-        )
-        .subscribe();
+
+          const updated: Document = {
+            id: row.id,
+            filename: row.filename,
+            char_count: row.char_count,
+            status: row.status,
+            created_at: row.created_at,
+          };
+          setDocs((prev) =>
+            prev.some((d) => d.id === updated.id)
+              ? prev.map((d) => (d.id === updated.id ? updated : d))
+              : [updated, ...prev]
+          );
+        }
+      );
+
+      // The cleanup may already have run while we were awaiting above.
+      if (cancelled) {
+        supabase.removeChannel(ch);
+        return;
+      }
+      channel = ch;
+      ch.subscribe();
     })();
 
     return () => {
+      cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
