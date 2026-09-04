@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from uuid import UUID
 import asyncio
+import logging
 import os
 
 from ..auth import get_current_user, CurrentUser
@@ -78,9 +79,21 @@ async def send_message(
 
     async def event_stream():
         full_reply = []
-        async for chunk in stream_chat_completion(history, context=retrieval.context, memories=memories):
-            full_reply.append(chunk)
-            yield chunk
+        try:
+            async for chunk in stream_chat_completion(
+                history, context=retrieval.context, memories=memories
+            ):
+                full_reply.append(chunk)
+                yield chunk
+        except Exception:
+            logging.getLogger("app.chat").exception("stream_failed")
+            # The 200 header is already sent, so this is the only way to tell
+            # the user anything. Without it the socket just closes.
+            yield "\n\n[The assistant failed to respond. Check the server logs.]"
+            return
+        
+        if not full_reply:
+            return
 
         # Persist the assistant's full reply (plus which sources backed it,
         # if any) once streaming finishes.

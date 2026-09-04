@@ -25,7 +25,7 @@ EXTRACTION_PROMPT = (
 
 async def _extract_fact(user_message: str) -> str | None:
     client = get_client()
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
     response = await client.chat.completions.create(
         model=model,

@@ -57,7 +57,7 @@ async def stream_chat_completion(
     Yields text chunks as they arrive from Groq.
     """
     client = get_client()
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
     system_content = SYSTEM_PROMPT
     if memories:

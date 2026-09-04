@@ -82,19 +82,17 @@ export default function ChatPage() {
     setStreaming(true);
 
     try {
-      await sendMessageStream(conversationId, userText, (chunk) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last?.id === "temp-assistant") {
-            next[next.length - 1] = { ...last, content: last.content + chunk };
-          }
-          return next;
-        });
+      await sendMessageStream(conversationId, userText, (_chunk) => {
+        // Intentionally left blank: the page refreshes from the persisted message list
+        // after the stream completes. Keep the callback signature compatible with the API.
       });
-      // Re-fetch so temp ids get replaced with real ones and the assistant
-      // message picks up its persisted citation sources (if any).
       setMessages(await getMessages(conversationId));
+    } catch (err) {
+      // Drop the optimistic bubbles and surface the failure instead of
+      // leaving a stalled empty reply on screen.
+      setMessages((prev) => prev.filter((m) => !m.id.startsWith("temp-")));
+      setDraft(userText);
+      alert(err instanceof Error ? err.message : "Failed to send message");
     } finally {
       setStreaming(false);
     }
