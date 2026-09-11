@@ -1,22 +1,40 @@
+import asyncio
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .embeddings import embed_query as _embed_query_sync
 from . import cache
-import asyncio
 
 MAX_DISTANCE = 1.0
 TOP_K = 8
 
-# How long a (scope, query) retrieval result stays cached. Short enough that
-# a newly uploaded document shows up in search within a few minutes without
-# needing explicit cache invalidation.
+# How long a (scope, query) retrieval result stays cached in Redis. Short
+# enough that a newly uploaded document shows up in search within a few
+# minutes without needing explicit cache invalidation.
 CACHE_TTL_SECONDS = 300
+
+# In-process cache of query embeddings. Embeddings depend only on the text
+# (never on who asked or which documents exist), so they can be reused
+# forever and across users. Costs ~1.5 KB per entry.
+EMBED_CACHE_SIZE = 1024
 
 
 @dataclass
 class RetrievalResult:
     context: str | None  # formatted text to feed the model, or None
     sources: list[dict]  # structured citation data for the frontend, [] if none
+
+
+@lru_cache(maxsize=EMBED_CACHE_SIZE)
+def _embed_cached(text: str) -> tuple[float, ...]:
+    return tuple(_embed_query_sync(text))
+
+
+async def _embed(text: str) -> list[float]:
+    # sentence-transformers is CPU-bound and synchronous -- offload it so it
+    # doesn't block the event loop for other requests. lru_cache is
+    # thread-safe for this use.
+    return list(await asyncio.to_thread(_embed_cached, text))
 
 
 async def retrieve_context(pool, *, owner_id: str, room_id: str | None, query: str) -> RetrievalResult:
@@ -27,18 +45,23 @@ async def retrieve_context(pool, *, owner_id: str, room_id: str | None, query: s
 
     Results are cached in Redis (if configured) per (scope, normalized
     query) for CACHE_TTL_SECONDS, so repeated or near-simultaneous questions
-    -- common in group rooms -- skip re-embedding and re-searching.
+    -- common in group rooms -- skip re-searching.
+
+    The Redis lookup and the query embedding run at the same time. On a
+    cache miss (the common case in personal chat) this removes the Redis
+    round trip from the critical path; on a hit the embedding is simply
+    discarded (and is usually an in-process cache hit anyway).
     """
     scope = f"room:{room_id}" if room_id is not None else f"user:{owner_id}"
-    cache_key = cache.make_key("retrieval", scope, query.strip().lower())
+    normalized = query.strip().lower()
+    cache_key = cache.make_key("retrieval", scope, normalized)
 
-    cached = await cache.get_json(cache_key)
+    cached, query_vector = await asyncio.gather(
+        cache.get_json(cache_key),
+        _embed(query),
+    )
     if cached is not None:
         return RetrievalResult(context=cached["context"], sources=cached["sources"])
-
-    # sentence-transformers is CPU-bound and synchronous -- offload it so it
-    # doesn't block the event loop for other requests.
-    query_vector = await asyncio.to_thread(_embed_query_sync, query)
 
     if room_id is None:
         rows = await pool.fetch(
@@ -73,9 +96,8 @@ async def retrieve_context(pool, *, owner_id: str, room_id: str | None, query: s
 
     relevant = [r for r in rows if r["distance"] <= MAX_DISTANCE]
     if not relevant:
-        result = RetrievalResult(context=None, sources=[])
         await cache.set_json(cache_key, {"context": None, "sources": []}, CACHE_TTL_SECONDS)
-        return result
+        return RetrievalResult(context=None, sources=[])
 
     blocks = [f"[Source: {r['filename']}]\n{r['content']}" for r in relevant]
     context = "\n\n---\n\n".join(blocks)

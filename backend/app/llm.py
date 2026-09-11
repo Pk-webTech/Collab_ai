@@ -1,9 +1,29 @@
-import os
+"""
+Groq client, prompts, and streaming chat completion (with optional tools).
+
+Latency notes:
+- Tool routing and the answer happen in ONE streaming call. Text is forwarded
+  to the client the moment Groq produces it. Only if the model decides to
+  call a tool do we make a second (also streaming) call with the results.
+  Previously the first call was non-streaming, so for most messages the user
+  saw nothing until the entire answer had been generated.
+- `fast_model()` returns a smaller model for side jobs (memory extraction)
+  that don't need the big model. Set GROQ_FAST_MODEL to enable it; if unset
+  it falls back to GROQ_MODEL so nothing breaks.
+"""
 import json
+import logging
+import os
 from typing import AsyncGenerator
-from groq import AsyncGroq
+
+from groq import AsyncGroq, BadRequestError
 
 from .tools import TOOLS_SCHEMA, call_tool
+
+logger = logging.getLogger("app.llm")
+
+DEFAULT_MODEL = "llama-3.3-70b-versatile"
+TEMPERATURE = 0.4
 
 _client: AsyncGroq | None = None
 
@@ -13,6 +33,14 @@ def get_client() -> AsyncGroq:
     if _client is None:
         _client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
     return _client
+
+
+def main_model() -> str:
+    return os.environ.get("GROQ_MODEL") or DEFAULT_MODEL
+
+
+def fast_model() -> str:
+    return os.environ.get("GROQ_FAST_MODEL") or main_model()
 
 
 SYSTEM_PROMPT = (
@@ -40,6 +68,33 @@ MEMORY_INSTRUCTIONS = (
 )
 
 
+def _build_messages(
+    history: list[dict], context: str | None, memories: list[str] | None
+) -> list[dict]:
+    system_content = SYSTEM_PROMPT
+    if memories:
+        system_content += MEMORY_INSTRUCTIONS + "\n".join(f"- {m}" for m in memories)
+    if context:
+        system_content += CONTEXT_INSTRUCTIONS + context
+    return [{"role": "system", "content": system_content}, *history]
+
+
+async def _stream_text(client: AsyncGroq, model: str, messages: list[dict]) -> AsyncGenerator[str, None]:
+    """Plain streaming completion, no tools."""
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        stream=True,
+        temperature=TEMPERATURE,
+    )
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
 async def stream_chat_completion(
     history: list[dict],
     context: str | None = None,
@@ -57,61 +112,94 @@ async def stream_chat_completion(
     Yields text chunks as they arrive from Groq.
     """
     client = get_client()
-    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+    model = main_model()
+    messages = _build_messages(history, context, memories)
 
-    system_content = SYSTEM_PROMPT
-    if memories:
-        system_content += MEMORY_INSTRUCTIONS + "\n".join(f"- {m}" for m in memories)
-    if context:
-        system_content += CONTEXT_INSTRUCTIONS + context
+    if not use_tools:
+        async for text in _stream_text(client, model, messages):
+            yield text
+        return
 
-    messages = [{"role": "system", "content": system_content}, *history]
+    # --- Pass 1: stream with tools available -------------------------------
+    # Text deltas go straight to the caller. Tool-call deltas arrive in
+    # fragments (id / name / arguments split across chunks) and are
+    # stitched together per tool-call index.
+    pending: dict[int, dict] = {}
+    preamble: list[str] = []
+    yielded_anything = False
 
-    if use_tools:
-        # First pass, non-streaming: let the model decide whether it needs a
-        # tool. Cheap and fast on Groq. If it doesn't need one, we already
-        # have the full answer and just emit it directly (no benefit to a
-        # second call); if it does, we run the tool(s) and stream the final
-        # answer in a second call below.
-        first = await client.chat.completions.create(
+    try:
+        stream = await client.chat.completions.create(
             model=model,
             messages=messages,
             tools=TOOLS_SCHEMA,
             tool_choice="auto",
-            temperature=0.4,
+            stream=True,
+            temperature=TEMPERATURE,
         )
-        choice = first.choices[0].message
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
 
-        if choice.tool_calls:
-            messages.append(
+            if delta.content:
+                preamble.append(delta.content)
+                yielded_anything = True
+                yield delta.content
+
+            for tc in delta.tool_calls or []:
+                slot = pending.setdefault(tc.index, {"id": None, "name": "", "arguments": ""})
+                if tc.id:
+                    slot["id"] = tc.id
+                fn = tc.function
+                if fn is not None:
+                    if fn.name:
+                        slot["name"] += fn.name
+                    if fn.arguments:
+                        slot["arguments"] += fn.arguments
+    except BadRequestError:
+        # Groq returns 400 ("tool_use_failed") when a model produces a
+        # malformed tool call. If nothing has reached the user yet, quietly
+        # answer without tools instead of failing the whole reply.
+        if yielded_anything:
+            raise
+        logger.warning("tool_stream_failed_falling_back_to_plain", exc_info=True)
+        async for text in _stream_text(client, model, messages):
+            yield text
+        return
+
+    calls = [slot for _, slot in sorted(pending.items()) if slot["name"]]
+    if not calls:
+        return  # the answer was already streamed in full
+
+    # --- Run the tools, then pass 2: stream the final answer ---------------
+    for i, slot in enumerate(calls):
+        slot["id"] = slot["id"] or f"call_{i}"
+
+    messages.append(
+        {
+            "role": "assistant",
+            "content": "".join(preamble) or None,
+            "tool_calls": [
                 {
-                    "role": "assistant",
-                    "content": choice.content,
-                    "tool_calls": [tc.model_dump() for tc in choice.tool_calls],
+                    "id": slot["id"],
+                    "type": "function",
+                    "function": {"name": slot["name"], "arguments": slot["arguments"] or "{}"},
                 }
-            )
-            for tc in choice.tool_calls:
-                try:
-                    arguments = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    arguments = {}
-                result = call_tool(tc.function.name, arguments)
-                messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": result}
-                )
-            # Fall through to the streaming call below with tool results attached.
-        elif choice.content:
-            yield choice.content
-            return
-
-    stream = await client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-        temperature=0.4,
+                for slot in calls
+            ],
+        }
     )
+    for slot in calls:
+        try:
+            arguments = json.loads(slot["arguments"] or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        result = call_tool(slot["name"], arguments)
+        messages.append({"role": "tool", "tool_call_id": slot["id"], "content": result})
 
-    async for chunk in stream:
-        delta = chunk.choices[0].delta.content
-        if delta:
-            yield delta
+    if preamble:
+        yield "\n\n"
+
+    async for text in _stream_text(client, model, messages):
+        yield text

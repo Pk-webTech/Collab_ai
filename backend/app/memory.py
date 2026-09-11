@@ -3,11 +3,17 @@ Automatic long-term memory. After a personal chat message is answered, a
 background task asks the model to pull out one durable fact worth
 remembering (if any) and stores it. Best-effort throughout: any failure
 here is swallowed so it can never break the chat response itself.
-"""
-import os
 
-from .llm import get_client
+Uses the small/fast model (GROQ_FAST_MODEL): this is a one-sentence
+classification job, and keeping it off the big model saves Groq rate limit
+for the replies users are actually waiting on.
+"""
+import logging
+
+from .llm import get_client, fast_model
 from .db import get_pool
+
+logger = logging.getLogger("app.memory")
 
 MAX_MEMORIES = 50  # keep the table (and the prompt it feeds) small
 
@@ -25,10 +31,8 @@ EXTRACTION_PROMPT = (
 
 async def _extract_fact(user_message: str) -> str | None:
     client = get_client()
-    model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-
     response = await client.chat.completions.create(
-        model=model,
+        model=fast_model(),
         messages=[
             {"role": "system", "content": EXTRACTION_PROMPT},
             {"role": "user", "content": user_message},
@@ -49,17 +53,25 @@ async def extract_and_store_memory(owner_id: str, user_message: str) -> None:
             return
 
         pool = get_pool()
-        existing = await pool.fetch(
-            "select content from user_memories where owner_id = $1", owner_id
-        )
-        if any(e["content"].strip().lower() == fact.strip().lower() for e in existing):
-            return  # exact duplicate, skip
 
-        await pool.execute(
-            "insert into user_memories (owner_id, content) values ($1, $2)",
+        # Insert only if an identical fact (case/whitespace-insensitive) isn't
+        # already stored -- done in SQL instead of loading every memory into
+        # Python and comparing there.
+        inserted = await pool.fetchval(
+            """
+            insert into user_memories (owner_id, content)
+            select $1::uuid, $2::text
+            where not exists (
+                select 1 from user_memories
+                where owner_id = $1::uuid and lower(trim(content)) = lower(trim($2::text))
+            )
+            returning id
+            """,
             owner_id,
             fact,
         )
+        if inserted is None:
+            return  # exact duplicate, skip
 
         # Keep the table bounded -- drop the oldest beyond MAX_MEMORIES.
         await pool.execute(
@@ -77,4 +89,5 @@ async def extract_and_store_memory(owner_id: str, user_message: str) -> None:
             MAX_MEMORIES,
         )
     except Exception:
-        pass
+        # Still best-effort, but leave a trace so silent failures can be found.
+        logger.warning("memory_extraction_failed owner_id=%s", owner_id, exc_info=True)

@@ -10,13 +10,31 @@ services:
   - type: web
     name: collab-ai-backend
     runtime: python
+    # Free instances sleep after ~15 min without traffic, and waking up
+    # means booting Python AND loading the embedding model (can take 30-60s
+    # or more). For consistently fast replies, switch to a paid plan
+    # (e.g. `starter`), which stays running.
     plan: free
+    # Put the backend in the region CLOSEST TO YOUR SUPABASE PROJECT: every
+    # chat message makes several database round trips, and cross-region
+    # trips add ~150-250 ms each. Supabase shows its region under
+    # Project Settings -> General. Examples:
+    #   Supabase ap-south-1 (Mumbai) or ap-southeast-1 (Singapore) -> singapore
+    #   Supabase eu-central-1 (Frankfurt)                          -> frankfurt
+    #   Supabase us-east-1 (N. Virginia)                           -> virginia
+    #   Supabase us-west-1 / us-west-2                             -> oregon
+    # Render cannot move an existing service to a new region; changing this
+    # means creating a new service.
+    region: singapore
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: SUPABASE_URL
+        sync: false
+      # Required by main.py at startup (it was missing from this file).
+      - key: SUPABASE_ANON_KEY
         sync: false
       - key: SUPABASE_JWT_SECRET
         sync: false
@@ -26,6 +44,10 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      # Small, fast model for background jobs (memory extraction). Confirm
+      # it's still served: GET https://api.groq.com/openai/v1/models
+      - key: GROQ_FAST_MODEL
+        value: llama-3.1-8b-instant
       - key: REDIS_URL
         sync: false
       - key: FRONTEND_ORIGINS
