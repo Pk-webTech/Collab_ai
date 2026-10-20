@@ -1,6 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+import json
 from uuid import UUID
 import asyncio
 import logging
@@ -26,7 +27,14 @@ CHAT_RATE_LIMIT = int(os.environ.get("CHAT_RATE_LIMIT_PER_MINUTE", "20"))
 
 class ChatIn(BaseModel):
     conversation_id: UUID
-    message: str
+    message: str = Field(min_length=1, max_length=20000)
+
+    @field_validator("message")
+    @classmethod
+    def nonempty_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Message can't be empty")
+        return value.strip()
 
 
 @router.post("")
@@ -108,12 +116,12 @@ async def send_message(
                 if first_token_ms is None:
                     first_token_ms = (time.monotonic() - t0) * 1000
                 full_reply.append(chunk)
-                yield chunk
+                yield json.dumps({"type": "delta", "text": chunk}) + "\n"
         except Exception:
             logger.exception("stream_failed conversation_id=%s", body.conversation_id)
             # The 200 header is already sent, so this is the only way to tell
             # the user anything. Without it the socket just closes.
-            yield "\n\n[The assistant failed to respond. Check the server logs.]"
+            yield json.dumps({"type": "error", "message": "The assistant failed to respond. Please try again."}) + "\n"
             return
         finally:
             # The request-logging middleware only measures time until the
@@ -131,6 +139,7 @@ async def send_message(
             )
 
         if not full_reply:
+            yield json.dumps({"type": "error", "message": "The assistant returned an empty reply. Please try again."}) + "\n"
             return
 
         # Save the reply and bump the conversation's updated_at in ONE round
@@ -150,9 +159,12 @@ async def send_message(
             )
         except Exception:
             logger.exception("save_reply_failed conversation_id=%s", body.conversation_id)
+            yield json.dumps({"type": "error", "message": "The reply could not be saved. Please reload the conversation."}) + "\n"
+            return
+        yield json.dumps({"type": "done"}) + "\n"
 
     # Runs the memory-extraction call after the response is fully sent, so
     # it never adds latency to the reply itself.
     background_tasks.add_task(extract_and_store_memory, user.id, body.message)
 
-    return StreamingResponse(event_stream(), media_type="text/plain", background=background_tasks)
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson", background=background_tasks)

@@ -3,10 +3,13 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { Brand, LoadingState } from "@/components/ChatUI";
+import { ArrowLeft, ArrowUpRight, KeyRound, Plus, Users } from "lucide-react";
 import { Room, createRoom, joinRoom, listRooms } from "@/lib/api";
 
 export default function RoomsPage() {
   const router = useRouter();
+  const [busy, setBusy] = useState<"create" | "join" | null>(null);
   const [ready, setReady] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
   const [newRoomName, setNewRoomName] = useState("");
@@ -21,12 +24,13 @@ export default function RoomsPage() {
       }
       setRooms(await listRooms());
       setReady(true);
-    });
+    }).catch((err) => { setError(err.message); setReady(true); });
   }, [router]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!newRoomName.trim()) return;
+    if (!newRoomName.trim() || busy) return;
+    setBusy("create");
     setError(null);
     try {
       const room = await createRoom(newRoomName.trim());
@@ -34,129 +38,28 @@ export default function RoomsPage() {
       router.push(`/rooms/${room.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create room");
-    }
+    } finally { setBusy(null); }
   }
 
   async function handleJoin(e: React.FormEvent) {
     e.preventDefault();
-    if (!joinCode.trim()) return;
+    if (!joinCode.trim() || busy) return;
+    setBusy("join");
     setError(null);
     try {
       const room = await joinRoom(joinCode.trim());
       router.push(`/rooms/${room.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to join room");
-    }
+    } finally { setBusy(null); }
   }
 
-  if (!ready) {
-    return (
-      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
-        <p style={{ color: "var(--text-muted)" }}>Loading rooms…</p>
-      </main>
-    );
-  }
-
-  return (
-    <main style={{ maxWidth: 640, margin: "0 auto", padding: 32 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ fontSize: 20 }}>Group rooms</h1>
-        <a href="/chat" style={{ fontSize: 13 }}>
-          ← Back to personal chat
-        </a>
-      </div>
-
-      <div style={{ display: "flex", gap: 16, margin: "24px 0" }}>
-        <form onSubmit={handleCreate} style={{ ...cardStyle, flex: 1 }}>
-          <h2 style={cardTitleStyle}>Create a room</h2>
-          <input
-            value={newRoomName}
-            onChange={(e) => setNewRoomName(e.target.value)}
-            placeholder="Room name"
-            style={inputStyle}
-          />
-          <button type="submit" style={buttonStyle}>
-            Create
-          </button>
-        </form>
-
-        <form onSubmit={handleJoin} style={{ ...cardStyle, flex: 1 }}>
-          <h2 style={cardTitleStyle}>Join with a code</h2>
-          <input
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-            placeholder="e.g. 7F3K9Q"
-            style={inputStyle}
-          />
-          <button type="submit" style={buttonStyle}>
-            Join
-          </button>
-        </form>
-      </div>
-
-      {error && <p style={{ color: "var(--danger)", fontSize: 13 }}>{error}</p>}
-
-      <h2 style={{ fontSize: 14, color: "var(--text-muted)", margin: "24px 0 8px" }}>
-        Your rooms
-      </h2>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {rooms.map((r) => (
-          <a
-            key={r.id}
-            href={`/rooms/${r.id}`}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              padding: "12px 16px",
-              background: "var(--panel)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              textDecoration: "none",
-              color: "var(--text)",
-            }}
-          >
-            <span>{r.name}</span>
-            <span style={{ color: "var(--text-muted)", fontSize: 13 }}>{r.join_code}</span>
-          </a>
-        ))}
-        {rooms.length === 0 && (
-          <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            No rooms yet — create one or join with a code.
-          </p>
-        )}
-      </div>
-    </main>
-  );
+  if (!ready) return <LoadingState label="Finding your rooms" />;
+  return <main className="rooms-page"><div className="page-topbar"><Brand /><a href="/chat"><ArrowLeft size={14} />Back to personal chat</a></div>
+    <div className="page-heading"><div className="eyebrow">BETTER IDEAS, TOGETHER</div><h1>Good company. Great conversations.</h1><p className="page-intro">A shared space for your team, your documents, and an extra spark of intelligence.</p></div>
+    {error && <div className="error-banner" role="alert">{error}</div>}
+    <div className="room-forms"><form className="room-form" onSubmit={handleCreate}><Users size={26} strokeWidth={1.4} /><h2>Make room for your team</h2><p>Start a space, share the code, and build on each other’s ideas.</p><label className="field-label" htmlFor="room-name">Room name</label><div className="room-form-row"><input id="room-name" className="text-input" value={newRoomName} maxLength={100} onChange={(e) => setNewRoomName(e.target.value)} placeholder="e.g. The brainstorm room" required /><button className="primary-button" disabled={!!busy || !newRoomName.trim()}><Plus size={15} />{busy === "create" ? "Creating…" : "Create"}</button></div></form>
+    <form className="room-form" onSubmit={handleJoin}><KeyRound size={26} strokeWidth={1.4} /><h2>Already have an invitation?</h2><p>Enter your six-character room code to join the conversation.</p><label className="field-label" htmlFor="join-code">Invitation code</label><div className="room-form-row"><input id="join-code" className="text-input" value={joinCode} maxLength={6} onChange={(e) => setJoinCode(e.target.value.toUpperCase())} placeholder="e.g. 7F3K9Q" required /><button className="secondary-button" disabled={!!busy || joinCode.trim().length !== 6}>{busy === "join" ? "Joining…" : "Join room"}<ArrowUpRight size={15} /></button></div></form></div>
+    <div className="section-heading"><h2>Your spaces</h2><span>{rooms.length} rooms</span></div><div className="room-cards">{rooms.map((r) => <a className="room-card" key={r.id} href={`/rooms/${r.id}`}><div className="room-card-icon"><Users size={23} strokeWidth={1.4} /><ArrowUpRight size={17} /></div><h3>{r.name}</h3><div className="room-card-footer"><span>CODE · {r.join_code}</span><span>Open room →</span></div></a>)}</div>{!rooms.length && <div className="empty-state"><Users size={30} />Your next collaboration starts here. Create or join a room above.</div>}
+  </main>;
 }
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--panel)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: 16,
-  display: "flex",
-  flexDirection: "column",
-  gap: 8,
-};
-
-const cardTitleStyle: React.CSSProperties = { fontSize: 14, margin: 0 };
-
-const inputStyle: React.CSSProperties = {
-  background: "var(--panel-raised)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: "8px 10px",
-  color: "var(--text)",
-  fontSize: 14,
-  outline: "none",
-};
-
-const buttonStyle: React.CSSProperties = {
-  background: "var(--accent)",
-  border: "none",
-  borderRadius: 8,
-  padding: "8px 12px",
-  color: "#0d1310",
-  fontWeight: 600,
-  fontSize: 13,
-};

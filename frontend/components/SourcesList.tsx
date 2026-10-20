@@ -1,48 +1,10 @@
 "use client";
-
 import { useState } from "react";
+import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { Source } from "@/lib/api";
-
 export default function SourcesList({ sources }: { sources: Source[] }) {
   const [open, setOpen] = useState(false);
-  if (!sources || sources.length === 0) return null;
-
-  const uniqueFilenames = Array.from(new Set(sources.map((s) => s.filename)));
-
-  return (
-    <div style={{ marginTop: 6 }}>
-      <button onClick={() => setOpen(!open)} style={toggleStyle}>
-        {open ? "▾" : "▸"} Sources: {uniqueFilenames.join(", ")}
-      </button>
-      {open && (
-        <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 6 }}>
-          {sources.map((s, i) => (
-            <div key={i} style={snippetStyle}>
-              <div style={{ color: "var(--accent)", marginBottom: 2 }}>
-                {s.filename} · chunk {s.chunk_index}
-              </div>
-              <div>{s.snippet}…</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  if (!sources?.length) return null;
+  const names = [...new Set(sources.map((s) => s.filename))];
+  return <div><button className="sources-toggle" aria-expanded={open} onClick={() => setOpen(!open)}><FileText size={12} /><span>{names.length} {names.length === 1 ? "source" : "sources"} · {names.join(", ")}</span>{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</button>{open && <div className="sources-grid">{sources.map((s, i) => <div className="source-card" key={`${s.document_id}-${s.chunk_index}-${i}`}><strong>{s.filename} · Excerpt {s.chunk_index + 1}</strong><p>{s.snippet}</p></div>)}</div></div>;
 }
-
-const toggleStyle: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  color: "var(--text-muted)",
-  fontSize: 12,
-  padding: 0,
-};
-
-const snippetStyle: React.CSSProperties = {
-  background: "var(--panel-raised)",
-  border: "1px solid var(--border)",
-  borderRadius: 6,
-  padding: "6px 8px",
-  fontSize: 12,
-  color: "var(--text-muted)",
-};

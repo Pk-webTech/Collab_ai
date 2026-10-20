@@ -117,7 +117,7 @@ through Supabase, including Realtime subscriptions.
 | Database   | Postgres 15 with `pgvector` (Supabase)                 |
 | Auth       | Supabase Auth (JWT, verified server-side)              |
 | Real-time  | Supabase Realtime (Postgres change subscriptions)      |
-| LLM        | Groq (`openai/gpt-oss-120b` by default)                |
+| LLM        | Groq (`llama-3.3-70b-versatile` by default)                |
 | Embeddings | `sentence-transformers`, `all-MiniLM-L6-v2`, local CPU |
 | Cache      | Redis (optional; Upstash free tier)                    |
 
@@ -134,7 +134,10 @@ through Supabase, including Realtime subscriptions.
 ### 1. Provision services
 
 **Supabase** — create a project at [supabase.com](https://supabase.com), then in
-the SQL Editor run the migrations in `db/` in filename order.
+the SQL Editor run `db/schema.sql` first, followed by `phase2_schema.sql`,
+`phase3_schema.sql`, `phase4_schema.sql`, `phase5_schema.sql`,
+`phase6_schema.sql`, `phase8_fixes.sql`, and `Phase9_performance .sql`.
+Do not sort these alphabetically: the base schema must run first.
 
 Collect four values:
 
@@ -203,7 +206,7 @@ Open [http://localhost:3000](http://localhost:3000) and sign up.
 | `DATABASE_URL`                       | yes      | Postgres connection string (Session pooler)        |
 | `GROQ_API_KEY`                       | yes      | Groq API key                                       |
 | `SUPABASE_JWT_SECRET`                | no       | Legacy HS256 fallback for older projects           |
-| `GROQ_MODEL`                         | no       | Default `openai/gpt-oss-120b`                      |
+| `GROQ_MODEL`                         | no       | Default `llama-3.3-70b-versatile`                      |
 | `REDIS_URL`                          | no       | Enables retrieval caching when set                 |
 | `FRONTEND_ORIGIN`                    | no       | Single allowed CORS origin                         |
 | `FRONTEND_ORIGINS`                   | no       | Comma-separated origins; takes priority            |
@@ -232,7 +235,7 @@ All routes require `Authorization: Bearer <supabase-jwt>`.
 | `GET`    | `/api/conversations`               | List your conversations                         |
 | `POST`   | `/api/conversations`               | Create a conversation                           |
 | `GET`    | `/api/conversations/{id}/messages` | Message history with citations                  |
-| `POST`   | `/api/chat`                        | Send a message; streams the reply as plain text |
+| `POST`   | `/api/chat`                        | Send a message; streams NDJSON delta/error/done events |
 | `GET`    | `/api/rooms`                       | List rooms you belong to                        |
 | `POST`   | `/api/rooms`                       | Create a room                                   |
 | `POST`   | `/api/rooms/join`                  | Join by code                                    |
@@ -355,10 +358,10 @@ error names it.
 **Every API call fails with a CORS error.** `FRONTEND_ORIGINS` does not include
 the origin the browser is loading from.
 
-**Chat fails with a bare `network error`.** The streaming response sends its
-`200` header before the model is called, so a mid-stream failure closes the
-socket without a status. The real cause is in the backend log — most often a
-model id that Groq has retired.
+**Chat fails while streaming.** The API sends newline-delimited JSON events:
+`delta` contains text, `error` reports generation or persistence failures, and
+`done` confirms that the reply was saved. Deploy the frontend and backend
+together. The UI reports interrupted streams; backend logs contain details.
 
 **Uploads stay on `processing`.** The background indexing task failed. Check
 the log for `document_processing_failed`.
@@ -380,3 +383,36 @@ re-upload it. If chunking looks right, the similarity threshold
 
 **Duplicate requests in development.** React Strict Mode mounts effects twice.
 This does not happen in production builds.
+
+## Verification
+
+### Windows startup after environment repair
+
+From the project root, run `./start-backend.ps1` in one PowerShell terminal and
+`./start-frontend.ps1` in another. These use the fresh `backend/.venv-runtime`
+environment and the production frontend build. Open `http://localhost:3000`.
+After frontend edits, run `npm --prefix frontend run build` before starting it.
+The old `backend/.venv` is preserved but is not used by these scripts.
+
+To recreate this environment on another machine:
+
+```powershell
+py -3.12 -m venv backend/.venv-runtime
+backend/.venv-runtime/Scripts/python.exe -m pip install -r backend/requirements.txt
+```
+
+### Checks
+
+Run `npm run typecheck`, `npm test`, and `npm run build` from `frontend/`.
+Run `python -m unittest discover -s tests -v` from `backend/` after installing
+its requirements. Regression tests mock database/model operations and never
+write to your live project. `python check_services.py` performs read-only
+checks of the database schema, Supabase Auth, and Groq model access.
+`python check_runtime.py` also tests local embeddings and database vector
+operations, and makes one short Groq completion request using synthetic text.
+
+If a Windows Python environment refers to a missing interpreter, create a new
+environment with an installed Python 3.11 or 3.12 interpreter, install
+`requirements.txt`, and use it to start the backend. For locked Next.js build
+output, stop the process holding it or set `NEXT_BUILD_DIR=.next-verify` for
+both build and start commands.

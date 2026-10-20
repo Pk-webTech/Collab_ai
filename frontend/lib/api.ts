@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL!;
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
 async function authHeaders() {
   const { data } = await supabase.auth.getSession();
@@ -217,10 +217,29 @@ export async function sendMessageStream(
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    onChunk(decoder.decode(value, { stream: true }));
+  let buffer = "";
+  let completed = false;
+  function consume(line: string) {
+    if (!line.trim()) return;
+    const event = JSON.parse(line);
+    if (event.type === "error") throw new Error(event.message);
+    if (event.type === "delta") onChunk(event.text);
+    if (event.type === "done") completed = true;
+  }
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach(consume);
+      if (done) break;
+    }
+    consume(buffer);
+    if (!completed) throw new Error("Connection interrupted before the reply was saved.");
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 

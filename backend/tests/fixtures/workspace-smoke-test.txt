@@ -1,0 +1,1 @@
+Synthetic workspace verification document. The test project is called Marigold. Its verification code is MARIGOLD-7429. The test launch day is Thursday. This text is fictional test data.

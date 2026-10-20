@@ -23,6 +23,7 @@ export default function RoomChatPage() {
   const params = useParams<{ roomId: string }>();
   const roomId = params.roomId;
 
+  const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [room, setRoom] = useState<Room | null>(null);
   const [members, setMembers] = useState<RoomMember[]>([]);
@@ -42,6 +43,8 @@ export default function RoomChatPage() {
   }
 
   useEffect(() => {
+    setReady(false);
+    setError(null);
     let cancelled = false;
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
@@ -115,9 +118,15 @@ export default function RoomChatPage() {
           await ch.track({ display_name: myName });
         }
       });
-    })();
+    })().catch((err) => { if (!cancelled) { setError(err.message); setReady(true); } });
 
+    const poll = setInterval(() => {
+      Promise.all([getRoomMessages(roomId), getRoomMembers(roomId)]).then(([rows, people]) => {
+        if (!cancelled) { setMessages(rows); setMembers(people); }
+      }).catch((err) => { if (!cancelled) setError(err.message); });
+    }, 5000);
     return () => {
+      clearInterval(poll);
       cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
@@ -140,7 +149,11 @@ export default function RoomChatPage() {
     try {
       // We don't optimistically append -- the Realtime INSERT event
       // delivers it back to us (and everyone else) a moment later.
-      await sendRoomMessage(roomId, text);
+      const sent = await sendRoomMessage(roomId, text);
+      setMessages((prev) => prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]);
+    } catch (err) {
+      setDraft(text);
+      setError(err instanceof Error ? err.message : "Message failed");
     } finally {
       setSending(false);
     }
@@ -149,28 +162,30 @@ export default function RoomChatPage() {
   async function handleRename(e: React.FormEvent) {
     e.preventDefault();
     if (!nameDraft.trim() || !room) return;
-    const updated = await renameRoom(roomId, nameDraft.trim());
-    setRoom(updated);
-    setRenaming(false);
+    try {
+      const updated = await renameRoom(roomId, nameDraft.trim());
+      setRoom(updated);
+      setRenaming(false);
+    } catch (err) { setError(err instanceof Error ? err.message : "Rename failed"); }
   }
 
   async function handleDeleteRoom() {
     if (!confirm("Delete this room for everyone? This can't be undone.")) return;
-    await deleteRoom(roomId);
-    router.push("/rooms");
+    try { await deleteRoom(roomId); router.push("/rooms"); }
+    catch (err) { setError(err instanceof Error ? err.message : "Delete failed"); }
   }
 
   async function handleLeaveRoom() {
     if (!myId.current) return;
     if (!confirm("Leave this room?")) return;
-    await removeOrLeaveRoom(roomId, myId.current);
-    router.push("/rooms");
+    try { await removeOrLeaveRoom(roomId, myId.current); router.push("/rooms"); }
+    catch (err) { setError(err instanceof Error ? err.message : "Could not leave room"); }
   }
 
   async function handleRemoveMember(memberId: string) {
     if (!confirm("Remove this member from the room?")) return;
-    await removeOrLeaveRoom(roomId, memberId);
-    await refreshMembers();
+    try { await removeOrLeaveRoom(roomId, memberId); await refreshMembers(); }
+    catch (err) { setError(err instanceof Error ? err.message : "Could not remove member"); }
   }
 
   if (!ready) {
@@ -280,6 +295,7 @@ export default function RoomChatPage() {
       <section style={{ flex: 1, display: "flex", flexDirection: "column" }}>
         <div style={{ flex: 1, overflowY: "auto", padding: "24px 0" }}>
           <div style={{ maxWidth: 720, margin: "0 auto", padding: "0 24px" }}>
+            {error && <p role="alert" style={{ color: "var(--danger)" }}>{error}</p>}
             {messages.map((m) => (
               <div key={m.id} style={{ marginBottom: 18 }}>
                 <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>

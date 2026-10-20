@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).with_name(".env"))
 
 from app.logging_config import configure_logging
 
@@ -24,7 +25,7 @@ logger = logging.getLogger("app.startup")
 
 # Fail fast with a clear message rather than a confusing error mid-request
 # if the deployment is missing something it needs.
-REQUIRED_ENV_VARS = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_JWT_SECRET", "DATABASE_URL", "GROQ_API_KEY"]
+REQUIRED_ENV_VARS = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "DATABASE_URL", "GROQ_API_KEY"]
 
 
 def _validate_env() -> None:
@@ -44,11 +45,13 @@ async def lifespan(app: FastAPI):
     # the GIL for several seconds even from a worker thread, which stalls
     # every concurrent request if it happens on the first upload instead.
     from app.embeddings import _get_model
-    await asyncio.to_thread(_get_model)
-    logger.info("startup_complete")
-    yield
-    await cache.close()
-    await close_pool()
+    try:
+        await asyncio.to_thread(_get_model)
+        logger.info("startup_complete")
+        yield
+    finally:
+        await cache.close()
+        await close_pool()
 
 
 app = FastAPI(title="Collaborative AI Workspace API", lifespan=lifespan)

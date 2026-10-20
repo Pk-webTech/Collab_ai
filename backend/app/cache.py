@@ -25,15 +25,16 @@ def _get_client():
 
     import redis.asyncio as redis  # imported lazily; only needed if configured
 
-    _client = redis.from_url(url, decode_responses=True)
+    _client = redis.from_url(url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2)
     return _client
 
 
 async def close():
-    global _client
+    global _client, _checked_env
     if _client is not None:
         await _client.close()
         _client = None
+    _checked_env = False
 
 
 def make_key(*parts: str) -> str:
@@ -42,22 +43,22 @@ def make_key(*parts: str) -> str:
 
 
 async def get_json(key: str) -> Optional[dict]:
-    client = _get_client()
-    if client is None:
-        return None
     try:
+        client = _get_client()
+        if client is None:
+            return None
         raw = await client.get(key)
+        return json.loads(raw) if raw else None
     except Exception:
         # Redis being unreachable should never break the app -- just skip the cache.
         return None
-    return json.loads(raw) if raw else None
 
 
 async def set_json(key: str, value: dict, ttl_seconds: int = 300) -> None:
-    client = _get_client()
-    if client is None:
-        return
     try:
+        client = _get_client()
+        if client is None:
+            return
         await client.set(key, json.dumps(value), ex=ttl_seconds)
     except Exception:
         pass

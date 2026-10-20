@@ -1,188 +1,65 @@
 "use client";
-
 import { useEffect, useRef, useState } from "react";
+import { Check, FileText, FolderOpen, LoaderCircle, Trash2, UploadCloud, AlertCircle } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { Document, deleteDocument, listDocuments, uploadDocument } from "@/lib/api";
 
 export default function DocumentsPanel({ roomId }: { roomId?: string }) {
   const [docs, setDocs] = useState<Document[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  async function refresh() {
-    setDocs(await listDocuments(roomId));
-  }
-
-  // Initial load, plus a live subscription so a document's status flips
-  // from "processing" to "ready" (or "failed") on screen the moment the
-  // backend's background task finishes -- no polling, no manual refresh.
-  // Works for uploads from other room members too.
+  const uploadLock = useRef(false);
   useEffect(() => {
     let cancelled = false;
+    let fetching = false;
     let channel: ReturnType<typeof supabase.channel> | null = null;
-
-    (async () => {
-      let filter: string;
-      if (roomId) {
-        filter = `room_id=eq.${roomId}`;
-      } else {
-        const { data } = await supabase.auth.getSession();
-        const uid = data.session?.user.id;
-        if (!uid) return;
-        filter = `owner_id=eq.${uid}`;
-      }
-      if (cancelled) return;
-
-      setDocs(await listDocuments(roomId));
-      if (cancelled) return;
-
-      // Unique topic per mount. supabase.channel() returns the EXISTING
-      // channel when the topic is already registered, and postgres_changes
-      // handlers cannot be attached after subscribe(). StrictMode mounts
-      // effects twice, so a fixed topic hits that on every dev render.
-      const topic = `documents:${roomId ?? "personal"}:${crypto.randomUUID()}`;
-
-      const ch = supabase.channel(topic).on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "documents", filter },
-        (payload) => {
-          const row = (payload.new ?? payload.old) as any;
-          if (!roomId && row.room_id) return;
-
-          if (payload.eventType === "DELETE") {
-            setDocs((prev) => prev.filter((d) => d.id !== row.id));
-            return;
-          }
-
-          const updated: Document = {
-            id: row.id,
-            filename: row.filename,
-            char_count: row.char_count,
-            status: row.status,
-            created_at: row.created_at,
-          };
-          setDocs((prev) =>
-            prev.some((d) => d.id === updated.id)
-              ? prev.map((d) => (d.id === updated.id ? updated : d))
-              : [updated, ...prev]
-          );
-        }
-      );
-
-      // The cleanup may already have run while we were awaiting above.
-      if (cancelled) {
-        supabase.removeChannel(ch);
-        return;
-      }
-      channel = ch;
-      ch.subscribe();
-    })();
-
-    return () => {
-      cancelled = true;
-      if (channel) supabase.removeChannel(channel);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId]);
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setError(null);
-    setUploading(true);
-    try {
-      // The upload call now returns as soon as the file is accepted -- the
-      // row starts out "processing" and the Realtime subscription above
-      // flips it to "ready" a moment later once chunking/embedding finishes.
-      const doc = await uploadDocument(file, roomId);
-      setDocs((prev) =>
-        prev.some((d) => d.id === doc.id)
-          ? prev.map((d) => (d.id === doc.id ? doc : d))
-          : [doc, ...prev]
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+    async function refresh() {
+      if (fetching) return;
+      fetching = true;
+      try { const rows = await listDocuments(roomId); if (!cancelled) setDocs(rows); }
+      catch (err) { if (!cancelled) setError(err instanceof Error ? err.message : "Could not load documents"); }
+      finally { fetching = false; }
     }
+    void refresh();
+    void (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (cancelled || !data.session) return;
+      channel = supabase.channel(`docs:${crypto.randomUUID()}`).on("postgres_changes", {
+        event: "*", schema: "public", table: "documents",
+        filter: roomId ? `room_id=eq.${roomId}` : `owner_id=eq.${data.session.user.id}`,
+      }, () => { void refresh(); }).subscribe();
+    })().catch(() => {});
+    const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 10000);
+    return () => { cancelled = true; clearInterval(timer); if (channel) void supabase.removeChannel(channel); };
+  }, [roomId]);
+  async function handleUpload(file?: File) {
+    if (!file || uploadLock.current) return;
+    if (file.size > 5 * 1024 * 1024) { setError("Choose a file smaller than 5 MB."); return; }
+    if (!/\.(txt|md|pdf)$/i.test(file.name)) { setError("Please choose a PDF, text, or Markdown file."); return; }
+    uploadLock.current = true; setUploading(true); setError(null);
+    try { const doc = await uploadDocument(file, roomId); setDocs((prev) => [doc, ...prev.filter((d) => d.id !== doc.id)]); }
+    catch (err) { setError(err instanceof Error ? err.message : "Upload failed"); }
+    finally { uploadLock.current = false; setUploading(false); if (fileInputRef.current) fileInputRef.current.value = ""; }
   }
-
   async function handleDelete(id: string) {
-    await deleteDocument(id);
-    setDocs((prev) => prev.filter((d) => d.id !== id));
+    if (!confirm("Remove this document? Its saved chunks will also be deleted.")) return;
+    setDeleting(id); setError(null);
+    try { await deleteDocument(id); setDocs((prev) => prev.filter((d) => d.id !== id)); }
+    catch (err) { setError(err instanceof Error ? err.message : "Delete failed"); }
+    finally { setDeleting(null); }
   }
-
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h3 style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 8px" }}>
-          Documents {roomId ? "(shared with room)" : "(personal)"}
-        </h3>
-      </div>
-
-      <label style={uploadButtonStyle}>
-        {uploading ? "Uploading…" : "+ Upload file"}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".txt,.md,.pdf"
-          onChange={handleFileChange}
-          disabled={uploading}
-          style={{ display: "none" }}
-        />
-      </label>
-
-      {error && (
-        <p style={{ color: "var(--danger)", fontSize: 12, margin: "8px 0 0" }}>{error}</p>
-      )}
-
-      <div style={{ marginTop: 8 }}>
-        {docs.map((d) => (
-          <div
-            key={d.id}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "4px 0",
-              fontSize: 12,
-              color: "var(--text-muted)",
-            }}
-          >
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {d.status === "processing" ? "⏳" : d.status === "failed" ? "⚠️" : "📄"} {d.filename}
-            </span>
-            <button onClick={() => handleDelete(d.id)} style={deleteButtonStyle}>
-              ✕
-            </button>
-          </div>
-        ))}
-        {docs.length === 0 && (
-          <p style={{ fontSize: 12, color: "var(--text-muted)" }}>No documents yet.</p>
-        )}
-      </div>
-    </div>
-  );
+  return <section className="panel-card" aria-label="Document library">
+    <div className="section-heading"><h2>{roomId ? "Room library" : "Your library"}</h2><span>{docs.length} {docs.length === 1 ? "document" : "documents"}</span></div>
+    <label className={`dropzone ${dragging ? "dragging" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); void handleUpload(e.dataTransfer.files[0]); }}>
+      {uploading ? <LoaderCircle size={30} className="spin" /> : <UploadCloud size={30} strokeWidth={1.3} />}
+      <strong>{uploading ? "Uploading your document…" : "Drop a file here, or click to browse"}</strong><small>PDF, Markdown, or text · Up to 5 MB</small>
+      <input ref={fileInputRef} type="file" accept=".txt,.md,.pdf" aria-label="Upload document" onChange={(e) => void handleUpload(e.target.files?.[0])} disabled={uploading} className="upload-input" />
+    </label>
+    {error && <div className="error-banner" role="alert" style={{ marginTop: 16 }}>{error}</div>}
+    <div className="document-list">{docs.map((d) => <div className="document-row" key={d.id}><span className="file-icon"><FileText size={20} strokeWidth={1.5} /></span><div className="document-info"><strong title={d.filename}>{d.filename}</strong><small>{d.char_count.toLocaleString()} characters · {new Date(d.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</small></div><span className={`status-tag ${d.status}`}>{d.status === "processing" ? <LoaderCircle size={11} className="spin" /> : d.status === "failed" ? <AlertCircle size={11} /> : <Check size={11} />}{d.status === "processing" ? "Indexing" : d.status === "failed" ? "Failed" : "Ready"}</span><button className="icon-button" title={`Delete ${d.filename}`} aria-label={`Delete ${d.filename}`} disabled={deleting === d.id} onClick={() => handleDelete(d.id)}>{deleting === d.id ? <LoaderCircle size={14} className="spin" /> : <Trash2 size={14} />}</button></div>)}</div>
+    {!docs.length && <div className="empty-state"><FolderOpen size={28} strokeWidth={1.2} />A little knowledge goes a long way.<br />Upload a document to get started.</div>}
+  </section>;
 }
-
-const uploadButtonStyle: React.CSSProperties = {
-  display: "block",
-  textAlign: "center",
-  background: "var(--panel-raised)",
-  border: "1px dashed var(--border)",
-  borderRadius: 8,
-  padding: "6px 10px",
-  fontSize: 12,
-  color: "var(--text)",
-  cursor: "pointer",
-};
-
-const deleteButtonStyle: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  color: "var(--text-muted)",
-  fontSize: 11,
-  padding: 2,
-};

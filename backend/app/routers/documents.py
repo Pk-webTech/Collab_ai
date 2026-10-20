@@ -136,7 +136,7 @@ async def upload_document(
         raise HTTPException(400, "That file is empty")
 
     try:
-        text = extract_text(file.filename, data)
+        text = await asyncio.to_thread(extract_text, file.filename, data)
     except UnsupportedFileType as e:
         raise HTTPException(400, str(e))
     except Exception:

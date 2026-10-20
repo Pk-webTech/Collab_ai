@@ -11,8 +11,8 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list[st
     `start` advances by a single character, and the splitter emits hundreds
     of near-identical chunks sliding one character at a time. Requiring the
     break to fall past `min_break` keeps every chunk close to `chunk_size`,
-    and the `min_start` floor guarantees forward progress even if a future
-    edit reintroduces a bad break point.
+    and advancing from the actual end preserves overlap without skipping
+    text after an early separator. The one-character floor ensures progress.
     """
     text = text.strip()
     if not text:
@@ -47,7 +47,6 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> list[st
             break
 
         # Never move backwards, and always advance by at least one character.
-        min_start = start + chunk_size - overlap
-        start = max(end - overlap, min_start, start + 1)
+        start = max(end - overlap, start + 1)
 
     return chunks

@@ -53,8 +53,15 @@ async def retrieve_context(pool, *, owner_id: str, room_id: str | None, query: s
     discarded (and is usually an in-process cache hit anyway).
     """
     scope = f"room:{room_id}" if room_id is not None else f"user:{owner_id}"
-    normalized = query.strip().lower()
-    cache_key = cache.make_key("retrieval", scope, normalized)
+    # Include the ready document set so uploads/deletes invalidate old results,
+    # including cached misses. Keep query case: codes and names can be case-sensitive.
+    revision = await pool.fetchval(
+        """select coalesce(string_agg(id::text, ',' order by id), '')
+        from documents where status = 'ready' and
+        (($2::uuid is null and room_id is null and owner_id = $1::uuid)
+         or room_id = $2::uuid)""", owner_id, room_id,
+    )
+    cache_key = cache.make_key("retrieval", scope, revision, query.strip())
 
     cached, query_vector = await asyncio.gather(
         cache.get_json(cache_key),
