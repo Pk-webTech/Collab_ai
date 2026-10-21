@@ -43,11 +43,11 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       # Small, fast model for background jobs (memory extraction). Confirm
       # it's still served: GET https://api.groq.com/openai/v1/models
       - key: GROQ_FAST_MODEL
-        value: llama-3.1-8b-instant
+        value: openai/gpt-oss-120b
       - key: FRONTEND_ORIGINS
         value: https://collab-ai-frontend.onrender.com
       - key: LOG_LEVEL

@@ -45,10 +45,13 @@ async def main():
             response = await client.get('https://api.groq.com/openai/v1/models',
                                         headers={'Authorization': 'Bearer ' + os.environ['GROQ_API_KEY']})
             response.raise_for_status()
-            from app.llm import main_model
-            if main_model() not in {model['id'] for model in response.json()['data']}:
-                raise RuntimeError('Configured model is unavailable')
-            print('Groq: credentials accepted; configured model listed')
+            from app.llm import main_model, fast_model
+            available = {model['id'] for model in response.json()['data']}
+            for setting, model in [('GROQ_MODEL', main_model()), ('GROQ_FAST_MODEL', fast_model())]:
+                if model not in available:
+                    print(f'Groq: {setting} model unavailable: {model}')
+                    raise RuntimeError('Configured model is unavailable')
+            print('Groq: credentials accepted; both configured models listed')
         except Exception as exc:
             print(f'Groq: FAILED ({type(exc).__name__})')
             failed = True
