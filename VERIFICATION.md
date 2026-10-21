@@ -70,3 +70,19 @@ end to end. New-account email confirmation and destructive UI actions were not
 performed. Existing documents affected by the earlier chunking bug need
 re-uploading. These checks establish that the core local flows work; they do
 not guarantee absence of every bug or constitute a production security audit.
+
+## Interactive UI verification — October 21, 2026
+
+- Redesigned personal chat, room screens, document and memory panels, and sign-in.
+- Added prompt starters, searchable conversation history, Markdown answers,
+  copy feedback, expanding composer, upload dropzone, and responsive navigation.
+- Production build and TypeScript validation pass; all 3 frontend streaming tests pass.
+- Live browser check: prompt starter fills/focuses composer, synthetic chat returns
+  a formatted numbered list, and copying an answer displays success feedback.
+- Document library loads existing ready files; memory empty state and room shared
+  library render. Existing room messages display after reload.
+- Checked desktop at 1440x900 and mobile at 390x844. Mobile document view has no
+  horizontal document overflow. Closed mobile sidebars are hidden from keyboard
+  navigation and the accessibility tree.
+- Service checks confirm database, Supabase Auth, and Groq connectivity.
+- Destructive controls and account creation were not exercised during this UI pass.

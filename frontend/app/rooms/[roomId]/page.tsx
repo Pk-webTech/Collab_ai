@@ -16,6 +16,8 @@ import {
   sendRoomMessage,
 } from "@/lib/api";
 import DocumentsPanel from "@/components/DocumentsPanel";
+import { Brand, Composer, CopyButton, LoadingState, MessageBody } from "@/components/ChatUI";
+import { ArrowLeft, Check, ChevronRight, FileText, LogOut, Menu, MessageSquare, Pencil, Sparkles, Trash2, Users, X } from "lucide-react";
 import SourcesList from "@/components/SourcesList";
 
 export default function RoomChatPage() {
@@ -33,6 +35,10 @@ export default function RoomChatPage() {
   const [sending, setSending] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showDocuments, setShowDocuments] = useState(false);
+  const nearBottom = useRef(true);
+  const sendLock = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const myId = useRef<string | null>(null);
 
@@ -121,10 +127,11 @@ export default function RoomChatPage() {
     })().catch((err) => { if (!cancelled) { setError(err.message); setReady(true); } });
 
     const poll = setInterval(() => {
+      if (document.hidden) return;
       Promise.all([getRoomMessages(roomId), getRoomMembers(roomId)]).then(([rows, people]) => {
         if (!cancelled) { setMessages(rows); setMembers(people); }
       }).catch((err) => { if (!cancelled) setError(err.message); });
-    }, 5000);
+    }, 10000);
     return () => {
       clearInterval(poll);
       cancelled = true;
@@ -134,7 +141,7 @@ export default function RoomChatPage() {
   }, [roomId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (nearBottom.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   const nameFor = (userId: string | null) =>
@@ -142,7 +149,10 @@ export default function RoomChatPage() {
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
-    if (!draft.trim() || sending) return;
+    if (!draft.trim() || sendLock.current) return;
+    sendLock.current = true;
+    nearBottom.current = true;
+    setError(null);
     setSending(true);
     const text = draft;
     setDraft("");
@@ -155,6 +165,7 @@ export default function RoomChatPage() {
       setDraft(text);
       setError(err instanceof Error ? err.message : "Message failed");
     } finally {
+      sendLock.current = false;
       setSending(false);
     }
   }
@@ -188,200 +199,20 @@ export default function RoomChatPage() {
     catch (err) { setError(err instanceof Error ? err.message : "Could not remove member"); }
   }
 
-  if (!ready) {
-    return (
-      <main style={{ minHeight: "100vh", display: "grid", placeItems: "center" }}>
-        <p style={{ color: "var(--text-muted)" }}>Loading room…</p>
-      </main>
-    );
-  }
-
-  return (
-    <main style={{ display: "flex", height: "100vh" }}>
-      <aside
-        style={{
-          width: 240,
-          borderRight: "1px solid var(--border)",
-          background: "var(--panel)",
-          padding: 16,
-          overflowY: "auto",
-        }}
-      >
-        <a href="/rooms" style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          ← All rooms
-        </a>
-
-        {renaming ? (
-          <form onSubmit={handleRename} style={{ margin: "12px 0 4px" }}>
-            <input
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              autoFocus
-              onBlur={handleRename}
-              style={renameInputStyle}
-            />
-          </form>
-        ) : (
-          <h2
-            style={{ fontSize: 16, margin: "12px 0 4px", cursor: isOwner ? "pointer" : "default" }}
-            onClick={() => isOwner && setRenaming(true)}
-            title={isOwner ? "Click to rename" : undefined}
-          >
-            {room?.name}
-          </h2>
-        )}
-        <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 16px" }}>
-          Code: {room?.join_code}
-        </p>
-
-        <h3 style={{ fontSize: 12, color: "var(--text-muted)", margin: "0 0 8px" }}>
-          Members ({members.length})
-        </h3>
-        {members.map((m) => (
-          <div
-            key={m.user_id}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 6,
-              padding: "4px 0",
-              fontSize: 13,
-            }}
-          >
-            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: onlineIds.has(m.user_id) ? "var(--accent)" : "var(--border)",
-                }}
-              />
-              {m.display_name}
-              {m.role === "owner" && (
-                <span style={{ fontSize: 10, color: "var(--text-muted)" }}>owner</span>
-              )}
-            </span>
-            {isOwner && m.role !== "owner" && (
-              <button onClick={() => handleRemoveMember(m.user_id)} style={smallActionStyle}>
-                remove
-              </button>
-            )}
-          </div>
-        ))}
-
-        <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 16 }}>
-          Type <code>@ai</code> at the start of a message to bring the assistant in.
-        </p>
-
-        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-          <DocumentsPanel roomId={roomId} />
-        </div>
-
-        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-          {isOwner ? (
-            <button onClick={handleDeleteRoom} style={dangerButtonStyle}>
-              Delete room
-            </button>
-          ) : (
-            <button onClick={handleLeaveRoom} style={dangerButtonStyle}>
-              Leave room
-            </button>
-          )}
-        </div>
-      </aside>
-
-      <section style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <div style={{ flex: 1, overflowY: "auto", padding: "24px 0" }}>
-          <div style={{ maxWidth: 720, margin: "0 auto", padding: "0 24px" }}>
-            {error && <p role="alert" style={{ color: "var(--danger)" }}>{error}</p>}
-            {messages.map((m) => (
-              <div key={m.id} style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
-                  {m.sender_type === "ai" ? "Assistant" : nameFor(m.user_id)}
-                </div>
-                <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
-                {m.sender_type === "ai" && m.sources && <SourcesList sources={m.sources} />}
-              </div>
-            ))}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <form
-          onSubmit={handleSend}
-          style={{
-            borderTop: "1px solid var(--border)",
-            padding: 16,
-            display: "flex",
-            justifyContent: "center",
-          }}
-        >
-          <div style={{ display: "flex", gap: 8, width: "100%", maxWidth: 720 }}>
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Message the room… (@ai to ask the assistant)"
-              style={messageInputStyle}
-            />
-            <button type="submit" disabled={sending} style={sendButtonStyle}>
-              {sending ? "…" : "Send"}
-            </button>
-          </div>
-        </form>
-      </section>
-    </main>
-  );
+  if (!ready) return <LoadingState label="Opening your room" />;
+  return <main className="workspace">
+    {sidebarOpen && <button className="sidebar-scrim" aria-label="Close room details" onClick={() => setSidebarOpen(false)} />}
+    <aside className={`workspace-sidebar ${sidebarOpen ? "open" : ""}`}><div className="sidebar-brand"><Brand /><button className="icon-button mobile-only" aria-label="Close room details" onClick={() => setSidebarOpen(false)}><X size={20} /></button></div>
+    <nav className="sidebar-nav"><a href="/rooms"><ArrowLeft size={16} />All rooms</a><a href="/chat"><MessageSquare size={16} />Personal workspace</a></nav>
+    <div className="room-sidebar-content"><div className="sidebar-label">SHARED SPACE</div>{renaming ? <form onSubmit={handleRename}><input aria-label="Room name" className="text-input" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} autoFocus maxLength={100} /><div style={{ display: "flex", gap: 8, marginTop: 8 }}><button className="secondary-button" disabled={!nameDraft.trim()}><Check size={14} />Save</button><button type="button" className="quiet-button" onClick={() => setRenaming(false)}>Cancel</button></div></form> : <h2>{room?.name || "Room unavailable"}{isOwner && <button className="icon-button" aria-label="Rename room" onClick={() => { setNameDraft(room?.name || ""); setRenaming(true); }}><Pencil size={13} /></button>}</h2>}
+      {room && <div className="room-code"><div><small>INVITE YOUR TEAM</small><strong>{room.join_code}</strong></div><CopyButton text={room.join_code} label="Copy code" /></div>}
+      <div className="sidebar-label">MEMBERS · {members.length}</div>{members.map((m) => <div className="member-row" key={m.user_id}><span className={`presence-dot ${onlineIds.has(m.user_id) ? "online" : ""}`} title={onlineIds.has(m.user_id) ? "Online" : "Offline"} /><span>{m.display_name || "Member"}</span>{m.role === "owner" && <small>OWNER</small>}{isOwner && m.role !== "owner" && <button className="icon-button" aria-label={`Remove ${m.display_name || "member"}`} onClick={() => handleRemoveMember(m.user_id)}><X size={13} /></button>}</div>)}
+      <p className="room-help">An extra mind at the table.<br />Start a message with <code>@ai</code> to bring your assistant into the conversation.</p>
+    </div>{room && <button className="room-danger" onClick={isOwner ? handleDeleteRoom : handleLeaveRoom}>{isOwner ? <Trash2 size={14} /> : <LogOut size={14} />}{isOwner ? "Delete room" : "Leave room"}</button>}
+    </aside><section className="workspace-main"><header className="workspace-header"><div className="breadcrumbs"><button className="icon-button mobile-only" aria-label="Open room details" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><a href="/rooms">Rooms</a><ChevronRight size={14} /><strong>{showDocuments ? "Shared library" : "Conversation"}</strong></div><div className="room-header-actions"><span className="privacy-badge"><Users size={14} />{onlineIds.size} online</span><button className="quiet-button" onClick={() => setShowDocuments(!showDocuments)}>{showDocuments ? <MessageSquare size={15} /> : <FileText size={15} />}{showDocuments ? "Back to chat" : "Shared files"}</button></div></header>
+    {showDocuments ? <div className="resource-page"><div className="eyebrow">A SHARED SOURCE OF KNOWLEDGE</div><h1>Keep everyone on the same page.</h1><p className="page-intro">Files in this library are available to every member of this room.</p><DocumentsPanel roomId={roomId} /></div> : <><div className="chat-scroll" onScroll={(e) => { const el = e.currentTarget; nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }}><div className="chat-content">{error && <div className="error-banner" role="alert">{error}<button className="icon-button" aria-label="Dismiss error" onClick={() => setError(null)}><X size={15} /></button></div>}<div className="conversation-heading"><span className="eyebrow">COLLABORATE & CREATE</span><h1>{room?.name || "Room unavailable"}</h1></div>
+    {!messages.length && <div className="room-empty"><Users size={40} strokeWidth={1.2} /><h2>Ideas are better together.</h2><p>Say hello, share a thought, or ask @ai to get things started.</p><button className="secondary-button" onClick={() => setDraft("@ai Help us brainstorm a plan for our project.")}><Sparkles size={15} />Start with a spark</button></div>}
+    {messages.map((m) => <article className={`message message-${m.sender_type === "ai" ? "assistant" : "user"}`} key={m.id}><div className={`message-avatar ${m.sender_type === "ai" ? "assistant-avatar" : ""}`}>{m.sender_type === "ai" ? <Sparkles size={18} /> : nameFor(m.user_id).slice(0, 1).toUpperCase()}</div><div className="message-main"><div className="message-meta"><strong>{m.sender_type === "ai" ? "Collab" : m.user_id === myId.current ? "You" : nameFor(m.user_id)}</strong>{m.sender_type === "ai" && <span className="ai-label">AI</span>}<time>{new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time></div><MessageBody content={m.content} />{m.sender_type === "ai" && <><CopyButton text={m.content} />{m.sources && <SourcesList sources={m.sources} />}</>}</div></article>)}<div ref={bottomRef} /></div></div><Composer room draft={draft} setDraft={setDraft} busy={sending || !room} onSubmit={handleSend} onDocuments={() => setShowDocuments(true)} /></>}
+    </section>
+  </main>;
 }
-
-const messageInputStyle: React.CSSProperties = {
-  flex: 1,
-  background: "var(--panel-raised)",
-  border: "1px solid var(--border)",
-  borderRadius: 8,
-  padding: "10px 12px",
-  color: "var(--text)",
-  fontSize: 14,
-  outline: "none",
-};
-
-const sendButtonStyle: React.CSSProperties = {
-  background: "var(--accent)",
-  border: "none",
-  borderRadius: 8,
-  padding: "10px 18px",
-  color: "#0d1310",
-  fontWeight: 600,
-  fontSize: 14,
-};
-
-const renameInputStyle: React.CSSProperties = {
-  width: "100%",
-  background: "var(--panel-raised)",
-  border: "1px solid var(--border)",
-  borderRadius: 6,
-  padding: "6px 8px",
-  color: "var(--text)",
-  fontSize: 15,
-  fontWeight: 600,
-  outline: "none",
-};
-
-const smallActionStyle: React.CSSProperties = {
-  background: "none",
-  border: "none",
-  color: "var(--danger)",
-  fontSize: 11,
-  padding: 0,
-};
-
-const dangerButtonStyle: React.CSSProperties = {
-  width: "100%",
-  background: "transparent",
-  border: "1px solid var(--danger)",
-  borderRadius: 8,
-  padding: "8px 12px",
-  color: "var(--danger)",
-  fontSize: 13,
-};

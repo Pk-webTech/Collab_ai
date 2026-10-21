@@ -27,16 +27,16 @@ services:
     # means creating a new service.
     region: singapore
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
       - key: SUPABASE_URL
         sync: false
       # Required by main.py at startup (it was missing from this file).
       - key: SUPABASE_ANON_KEY
-        sync: false
-      - key: SUPABASE_JWT_SECRET
         sync: false
       - key: DATABASE_URL
         sync: false
@@ -48,8 +48,6 @@ services:
       # it's still served: GET https://api.groq.com/openai/v1/models
       - key: GROQ_FAST_MODEL
         value: llama-3.1-8b-instant
-      - key: REDIS_URL
-        sync: false
       - key: FRONTEND_ORIGINS
         sync: false
       - key: LOG_LEVEL
@@ -60,3 +58,21 @@ services:
         value: "30"
       - key: UPLOAD_RATE_LIMIT_PER_MINUTE
         value: "10"
+  - type: web
+    name: collab-ai-frontend
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start -- --hostname 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
