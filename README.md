@@ -1,16 +1,29 @@
 # Collaborative AI Workspace
 
+**Live project: [collab-ai-frontend.onrender.com](https://collab-ai-frontend.onrender.com)**
+
+[Open the workspace](https://collab-ai-frontend.onrender.com/chat) · [GitHub repository](https://github.com/Pk-webTech/Collab_ai)
+
 A self-hosted AI workspace where individuals and teams chat with an assistant
 that is grounded in their own documents. Personal conversations stay private;
 shared rooms let a group talk to the same assistant over the same material, in
 real time.
 
-Built entirely on free-tier infrastructure. The embedding model runs locally on
-CPU, so the only external service that costs anything at scale is the LLM API.
+The live frontend and backend are hosted on Render’s free plan, with Supabase
+for authentication and data, and Groq for AI responses. Document embeddings run
+on the backend CPU. Hosting and provider costs depend on usage and plan limits.
+
+> **First visit:** free services sleep when idle. Allow around 1–2 minutes or
+> longer for the backend to wake and load its embedding model, then retry if needed.
 
 ---
 
 ## What it does
+
+**Interactive interface.** Responsive desktop and mobile layouts, clickable
+prompt starters, searchable conversation history, Markdown-formatted replies,
+copy feedback, an expanding message composer, and document drag-and-drop.
+Press Enter to send or Shift+Enter for a new line.
 
 **Personal chat.** Create conversations, send messages, and get streamed replies
 token by token. Everything is persisted to Postgres, so history survives
@@ -117,7 +130,7 @@ through Supabase, including Realtime subscriptions.
 | Database   | Postgres 15 with `pgvector` (Supabase)                 |
 | Auth       | Supabase Auth (JWT, verified server-side)              |
 | Real-time  | Supabase Realtime (Postgres change subscriptions)      |
-| LLM        | Groq (`llama-3.3-70b-versatile` by default)                |
+| LLM        | Groq (`openai/gpt-oss-120b` in the live deployment)     |
 | Embeddings | `sentence-transformers`, `all-MiniLM-L6-v2`, local CPU |
 | Cache      | Redis (optional; Upstash free tier)                    |
 
@@ -206,7 +219,7 @@ Open [http://localhost:3000](http://localhost:3000) and sign up.
 | `DATABASE_URL`                       | yes      | Postgres connection string (Session pooler)        |
 | `GROQ_API_KEY`                       | yes      | Groq API key                                       |
 | `SUPABASE_JWT_SECRET`                | no       | Legacy HS256 fallback for older projects           |
-| `GROQ_MODEL`                         | no       | Default `llama-3.3-70b-versatile`                      |
+| `GROQ_MODEL`                         | no       | Set explicitly; live deployment uses `openai/gpt-oss-120b` |
 | `REDIS_URL`                          | no       | Enables retrieval caching when set                 |
 | `FRONTEND_ORIGIN`                    | no       | Single allowed CORS origin                         |
 | `FRONTEND_ORIGINS`                   | no       | Comma-separated origins; takes priority            |
@@ -279,35 +292,45 @@ error at boot rather than a confusing failure mid-request.
 
 ## Deployment
 
-Backend to [Render](https://render.com), frontend to
-[Vercel](https://vercel.com). Supabase, Groq, and Redis are unchanged.
+Both services are deployed on Render using the repository’s `render.yaml` Blueprint.
 
-### Backend
+| Service | Public URL |
+| --- | --- |
+| Website | [collab-ai-frontend.onrender.com](https://collab-ai-frontend.onrender.com) |
+| Backend API | [collab-ai-backend-n5x1.onrender.com](https://collab-ai-backend-n5x1.onrender.com) |
+| Backend health | [Health check](https://collab-ai-backend-n5x1.onrender.com/health) |
 
-Either point Render at the repo as a Blueprint (it reads `render.yaml`), or
-create a Web Service manually with root directory `backend`, build command
-`pip install -r requirements.txt`, start command
-`uvicorn main:app --host 0.0.0.0 --port $PORT`, and health check path `/health`.
+The backend root URL is an API host, not a webpage; use `/health` to check readiness.
 
-Set every required variable from the configuration table. Leave
-`FRONTEND_ORIGINS` empty until the frontend is deployed.
+### Deploy your own copy
 
-> Free-tier Render services sleep after ~15 minutes idle and take up to ~50
-> seconds to wake. Startup also loads the embedding model, so the first request
-> after a cold start is slow by design.
+1. Connect your repository to Render and create a Blueprint using `render.yaml`.
+2. Supply the Supabase URL, public anon key, database connection string, and Groq
+   API key through Render environment settings. Never commit `.env` files.
+3. The backend uses Python 3.12.10, CPU-only PyTorch, and FastAPI. The frontend
+   uses Node.js 22 and a production Next.js build. Build and start commands are
+   defined in the Blueprint.
+4. Replace the Blueprint’s `NEXT_PUBLIC_API_URL` with your assigned backend URL
+   and `FRONTEND_ORIGINS` with your frontend origin. These values currently point
+   to the live project above. Rebuild the frontend when changing `NEXT_PUBLIC_*`.
+5. In Supabase → Authentication → URL Configuration, set your frontend as the
+   Site URL and add the required redirect URLs for email confirmation flows.
 
-### Frontend
+### AI model configuration
 
-Import the repo on Vercel with root directory `frontend`. Add the three
-`NEXT_PUBLIC_*` variables, pointing `NEXT_PUBLIC_API_URL` at the Render URL.
+The live deployment explicitly sets both `GROQ_MODEL` and `GROQ_FAST_MODEL` to
+`openai/gpt-oss-120b`. Validate both models against your own Groq account before
+using them. A healthy backend does not by itself confirm that AI generation
+works: test a streamed chat reply after deployment.
 
-### Connect the two
+### Free-plan behavior and document limits
 
-1. Set the backend's `FRONTEND_ORIGINS` to your Vercel domain and redeploy.
-   Without this, CORS blocks every API call.
-2. In Supabase → Authentication → URL Configuration, set the Site URL to your
-   Vercel domain and add it under Redirect URLs, so auth emails do not point at
-   `localhost`.
+Render’s free services sleep when idle. Waking the backend also loads the
+embedding model, so first requests can take around 1–2 minutes or longer.
+
+PDF support extracts embedded text; it does not perform OCR. Scanned,
+handwritten, or poorly encoded PDFs can produce empty or garbled text. Upload a
+searchable PDF or a clean `.txt`/`.md` version for reliable document summaries.
 
 ---
 
